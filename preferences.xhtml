@@ -1,0 +1,110 @@
+<vbox id="institutional-pdf-bridge-preferences"
+      xmlns:html="http://www.w3.org/1999/xhtml"
+      onload="InstitutionalPDFBridgePreferences.init()">
+  <groupbox>
+    <label><html:h2>Institution</html:h2></label>
+    <checkbox id="institutional-pdf-bridge-enabled"
+              native="true"
+              label="Enable institutional PDF lookup"
+              preference="extensions.zotero.institutionalPDFBridge.enabled"/>
+    <vbox class="institutional-pdf-bridge-fields">
+      <hbox class="institutional-pdf-bridge-field" align="center">
+        <label value="Institution name" control="institutional-pdf-bridge-name"/>
+        <html:input id="institutional-pdf-bridge-name"
+                    type="text"
+                    preference="extensions.zotero.institutionalPDFBridge.institutionName"/>
+      </hbox>
+      <hbox class="institutional-pdf-bridge-field" align="center">
+        <label value="Gateway URL" control="institutional-pdf-bridge-gateway"/>
+        <html:input id="institutional-pdf-bridge-gateway"
+                    type="url"
+                    preference="extensions.zotero.institutionalPDFBridge.gatewayURL"/>
+      </hbox>
+      <hbox class="institutional-pdf-bridge-field" align="center">
+        <label value="Login URL" control="institutional-pdf-bridge-login"/>
+        <html:input id="institutional-pdf-bridge-login"
+                    type="url"
+                    preference="extensions.zotero.institutionalPDFBridge.loginURL"/>
+      </hbox>
+    </vbox>
+  </groupbox>
+
+  <groupbox>
+    <label><html:h2>Proxy</html:h2></label>
+    <vbox class="institutional-pdf-bridge-fields">
+      <hbox class="institutional-pdf-bridge-field" align="center">
+        <label value="Mode" control="institutional-pdf-bridge-mode"/>
+        <menulist id="institutional-pdf-bridge-mode"
+                  native="true"
+                  preference="extensions.zotero.institutionalPDFBridge.mode"
+                  oncommand="InstitutionalPDFBridgePreferences.updateMode()">
+          <menupopup>
+            <menuitem label="Sangfor-compatible WebVPN" value="sangfor"/>
+            <menuitem label="URL template (experimental)" value="template"/>
+            <menuitem label="Direct authenticated site" value="direct"/>
+          </menupopup>
+        </menulist>
+      </hbox>
+      <hbox class="institutional-pdf-bridge-field" align="center">
+        <label value="URL template" control="institutional-pdf-bridge-template"/>
+        <html:input id="institutional-pdf-bridge-template"
+                    type="text"
+                    preference="extensions.zotero.institutionalPDFBridge.urlTemplate"/>
+      </hbox>
+      <hbox class="institutional-pdf-bridge-field" align="center">
+        <label value="Sangfor key" control="institutional-pdf-bridge-key"/>
+        <html:input id="institutional-pdf-bridge-key"
+                    type="text"
+                    maxlength="16"
+                    preference="extensions.zotero.institutionalPDFBridge.cipherKey"/>
+      </hbox>
+      <hbox class="institutional-pdf-bridge-field" align="center">
+        <label value="Request timeout (ms)" control="institutional-pdf-bridge-timeout"/>
+        <html:input id="institutional-pdf-bridge-timeout"
+                    type="number"
+                    min="5000"
+                    max="300000"
+                    step="1000"
+                    preference="extensions.zotero.institutionalPDFBridge.requestTimeoutMs"/>
+      </hbox>
+      <hbox class="institutional-pdf-bridge-field" align="center">
+        <label value="Request retries" control="institutional-pdf-bridge-retries"/>
+        <html:input id="institutional-pdf-bridge-retries"
+                    type="number"
+                    min="0"
+                    max="3"
+                    step="1"
+                    preference="extensions.zotero.institutionalPDFBridge.requestRetryCount"/>
+      </hbox>
+      <hbox class="institutional-pdf-bridge-field" align="center">
+        <label value="Login URL keywords" control="institutional-pdf-bridge-keywords"/>
+        <html:input id="institutional-pdf-bridge-keywords"
+                    type="text"
+                    preference="extensions.zotero.institutionalPDFBridge.loginPathKeywords"/>
+      </hbox>
+    </vbox>
+    <checkbox id="institutional-pdf-bridge-auto-close"
+              native="true"
+              label="Close the login window after authentication"
+              preference="extensions.zotero.institutionalPDFBridge.autoCloseLogin"/>
+    <checkbox id="institutional-pdf-bridge-auto-fetch"
+              native="true"
+              label="Automatically find PDFs for new items"
+              preference="extensions.zotero.institutionalPDFBridge.autoFetchNewItems"/>
+    <hbox class="institutional-pdf-bridge-field" align="center">
+      <label value="Automatic lookup delay (ms)" control="institutional-pdf-bridge-auto-delay"/>
+      <html:input id="institutional-pdf-bridge-auto-delay"
+                  type="number"
+                  min="2000"
+                  max="60000"
+                  step="1000"
+                  preference="extensions.zotero.institutionalPDFBridge.autoFetchDelayMs"/>
+    </hbox>
+    <hbox align="center">
+      <button id="institutional-pdf-bridge-test"
+              label="Save and test login"
+              oncommand="InstitutionalPDFBridgePreferences.testLogin()"/>
+      <label id="institutional-pdf-bridge-status" value=""/>
+    </hbox>
+  </groupbox>
+</vbox>

@@ -1,0 +1,13 @@
+pref("extensions.zotero.institutionalPDFBridge.enabled", true);
+pref("extensions.zotero.institutionalPDFBridge.institutionName", "Institutional access");
+pref("extensions.zotero.institutionalPDFBridge.gatewayURL", "");
+pref("extensions.zotero.institutionalPDFBridge.loginURL", "");
+pref("extensions.zotero.institutionalPDFBridge.mode", "sangfor");
+pref("extensions.zotero.institutionalPDFBridge.urlTemplate", "{gateway}/login?url={url}");
+pref("extensions.zotero.institutionalPDFBridge.cipherKey", "");
+pref("extensions.zotero.institutionalPDFBridge.autoCloseLogin", true);
+pref("extensions.zotero.institutionalPDFBridge.requestTimeoutMs", 180000);
+pref("extensions.zotero.institutionalPDFBridge.requestRetryCount", 1);
+pref("extensions.zotero.institutionalPDFBridge.autoFetchNewItems", false);
+pref("extensions.zotero.institutionalPDFBridge.autoFetchDelayMs", 12000);
+pref("extensions.zotero.institutionalPDFBridge.loginPathKeywords", "login,cas,auth,sso,saml,oauth");

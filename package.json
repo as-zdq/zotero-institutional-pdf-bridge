@@ -1,0 +1,19 @@
+{
+  "name": "zotero-institutional-pdf-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Institutional proxy PDF lookup for Zotero",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/as-zdq/zotero-institutional-pdf-bridge.git"
+  },
+  "homepage": "https://github.com/as-zdq/zotero-institutional-pdf-bridge",
+  "bugs": {
+    "url": "https://github.com/as-zdq/zotero-institutional-pdf-bridge/issues"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs"
+  }
+}

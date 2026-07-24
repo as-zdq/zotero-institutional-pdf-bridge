@@ -1,0 +1,18 @@
+{
+  "addons": {
+    "institutional-pdf-bridge@as-zdq.github.io": {
+      "updates": [
+        {
+          "version": "0.1.0",
+          "update_link": "https://github.com/as-zdq/zotero-institutional-pdf-bridge/releases/download/v0.1.0/institutional-pdf-bridge-0.1.0.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "8.0-beta.21",
+              "strict_max_version": "10.99.99"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
