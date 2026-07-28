@@ -29,6 +29,7 @@ function loadBridge(preferences = {}) {
   const calls = [];
   const files = new Map();
   const items = new Map();
+  const credentialLogins = [];
   let notifier;
   const standardResolver = async () => {
     calls.push("standard-resolver");
@@ -37,9 +38,49 @@ function loadBridge(preferences = {}) {
   const context = {
     URL,
     Uint8Array,
-    Services: { appShell: { hiddenDOMWindow: { crypto: webcrypto } } },
+    Services: {
+      appShell: { hiddenDOMWindow: { crypto: webcrypto } },
+      logins: {
+        findLogins(origin, formActionOrigin, httpRealm) {
+          return credentialLogins.filter((login) =>
+            login.origin === origin &&
+            login.formActionOrigin === formActionOrigin &&
+            login.httpRealm === httpRealm
+          );
+        },
+        addLogin(login) {
+          credentialLogins.push(login);
+        },
+        removeLogin(login) {
+          const index = credentialLogins.indexOf(login);
+          if (index !== -1) {
+            credentialLogins.splice(index, 1);
+          }
+        }
+      }
+    },
     ChromeUtils: {},
-    Components: {},
+    Components: {
+      Constructor: () => function LoginInfo(
+        origin,
+        formActionOrigin,
+        httpRealm,
+        username,
+        password,
+        usernameField,
+        passwordField
+      ) {
+        Object.assign(this, {
+          origin,
+          formActionOrigin,
+          httpRealm,
+          username,
+          password,
+          usernameField,
+          passwordField
+        });
+      }
+    },
     Zotero: {
       Attachments: {
         getFileResolvers: () => [standardResolver],
@@ -96,6 +137,7 @@ function loadBridge(preferences = {}) {
     calls,
     files,
     items,
+    credentialLogins,
     getNotifier: () => notifier
   };
 }
@@ -129,6 +171,145 @@ test("old 45-second user setting is migrated to the slower WebVPN default", () =
   const { bridge } = loadBridge(preferences);
   bridge.migrateLegacyRequestTimeout();
   assert.equal(bridge.getConfig().requestTimeoutMs, 180000);
+});
+
+test("credentials are stored in Zotero Password Manager instead of preferences", async () => {
+  const preferences = {
+    "extensions.zotero.institutionalPDFBridge.gatewayURL": "https://proxy.example.edu",
+    "extensions.zotero.institutionalPDFBridge.loginURL": "https://login.example.edu/cas"
+  };
+  const { bridge, credentialLogins } = loadBridge(preferences);
+  await bridge.storeCredentials("alice", "correct-horse-battery-staple");
+
+  assert.equal(credentialLogins.length, 1);
+  const stored = await bridge.getStoredCredentials();
+  assert.equal(stored.username, "alice");
+  assert.equal(stored.password, "correct-horse-battery-staple");
+  assert.equal(credentialLogins[0].origin, "https://login.example.edu");
+  assert.equal(
+    credentialLogins[0].httpRealm,
+    "institutional-pdf-bridge:https://login.example.edu"
+  );
+  assert.equal(
+    Object.values(preferences).includes("correct-horse-battery-staple"),
+    false
+  );
+
+  await bridge.removeStoredCredentials();
+  assert.equal(await bridge.hasStoredCredentials(), false);
+});
+
+test("automatic credential submission is restricted to the configured HTTPS login origin", async () => {
+  const preferences = {
+    "extensions.zotero.institutionalPDFBridge.gatewayURL": "https://proxy.example.edu",
+    "extensions.zotero.institutionalPDFBridge.loginURL": "https://login.example.edu/cas",
+    "extensions.zotero.institutionalPDFBridge.autoLogin": true
+  };
+  const { bridge } = loadBridge(preferences);
+  await bridge.storeCredentials("alice", "test-password");
+  const queries = [];
+  bridge.waitForActor = async () => ({
+    sendQuery: async (name, payload) => {
+      queries.push({ name, payload });
+      return { submitted: true };
+    }
+  });
+
+  assert.equal(await bridge.submitStoredCredentials({}, {
+    url: "https://login.example.edu/cas/login",
+    hasPasswordField: true
+  }), true);
+  assert.equal(queries.length, 1);
+  assert.equal(queries[0].name, "FillLogin");
+  assert.equal(queries[0].payload.username, "alice");
+  assert.equal(queries[0].payload.password, "test-password");
+
+  assert.equal(await bridge.submitStoredCredentials({}, {
+    url: "https://unexpected.example.edu/cas/login",
+    hasPasswordField: true
+  }), false);
+  assert.equal(queries.length, 1);
+});
+
+test("saved credentials require an HTTPS login URL", async () => {
+  const { bridge } = loadBridge({
+    "extensions.zotero.institutionalPDFBridge.loginURL": "http://login.example.edu/cas"
+  });
+  await assert.rejects(
+    bridge.storeCredentials("alice", "test-password"),
+    /require an HTTPS institution login URL/
+  );
+});
+
+test("login actor fills a standard form and submits it", async () => {
+  const source = readFileSync(new URL("../proxy-child.sys.mjs", import.meta.url), "utf8")
+    .replace("export class InstitutionalPDFBridgeActorChild", "class InstitutionalPDFBridgeActorChild")
+    .concat("\nglobalThis.InstitutionalPDFBridgeActorChild = InstitutionalPDFBridgeActorChild;");
+  const actorContext = { JSWindowActorChild: class {} };
+  createContext(actorContext);
+  runInContext(source, actorContext);
+
+  class FakeInput {
+    constructor({ type, name = "", id = "", form = null }) {
+      this.type = type;
+      this.name = name;
+      this.id = id;
+      this.form = form;
+      this.disabled = false;
+      this.events = [];
+      this._value = "";
+    }
+
+    get value() {
+      return this._value;
+    }
+
+    set value(value) {
+      this._value = value;
+    }
+
+    dispatchEvent(event) {
+      this.events.push(event.type);
+    }
+  }
+
+  const submitter = { clicks: 0, click() { this.clicks++; } };
+  const form = { querySelector: () => submitter };
+  const username = new FakeInput({ type: "text", name: "username", form });
+  const password = new FakeInput({ type: "password", name: "password", form });
+  const document = {
+    location: { href: "https://login.example.edu/cas" },
+    querySelector(selector) {
+      if (selector.startsWith('input[type="password"]')) {
+        return password;
+      }
+      if (selector.includes('button[type="submit"]')) {
+        return submitter;
+      }
+      return null;
+    },
+    querySelectorAll(selector) {
+      return selector === "input" ? [username, password] : [];
+    }
+  };
+  const actor = new actorContext.InstitutionalPDFBridgeActorChild();
+  actor.document = document;
+  actor.contentWindow = {
+    HTMLInputElement: FakeInput,
+    Event: class Event { constructor(type) { this.type = type; } }
+  };
+
+  const result = await actor.receiveMessage({
+    name: "FillLogin",
+    data: { username: "alice", password: "test-password" }
+  });
+  assert.equal(result.submitted, true);
+  assert.equal(result.usernameFilled, true);
+  assert.equal(username.value, "alice");
+  assert.equal(password.value, "test-password");
+  assert.deepEqual(username.events, ["input", "change"]);
+  assert.deepEqual(password.events, ["input", "change"]);
+  assert.equal(submitter.clicks, 1);
 });
 
 test("Sangfor-compatible host encoding remains stable", async () => {

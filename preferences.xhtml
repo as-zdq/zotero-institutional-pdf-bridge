@@ -21,7 +21,7 @@
                     preference="extensions.zotero.institutionalPDFBridge.gatewayURL"/>
       </hbox>
       <hbox class="institutional-pdf-bridge-field" align="center">
-        <label value="Login URL" control="institutional-pdf-bridge-login"/>
+        <label value="Login URL (SSO/CAS page)" control="institutional-pdf-bridge-login"/>
         <html:input id="institutional-pdf-bridge-login"
                     type="url"
                     preference="extensions.zotero.institutionalPDFBridge.loginURL"/>
@@ -87,6 +87,34 @@
               native="true"
               label="Close the login window after authentication"
               preference="extensions.zotero.institutionalPDFBridge.autoCloseLogin"/>
+    <checkbox id="institutional-pdf-bridge-auto-login"
+              native="true"
+              label="Automatically sign in with saved credentials"
+              preference="extensions.zotero.institutionalPDFBridge.autoLogin"
+              oncommand="InstitutionalPDFBridgePreferences.updateCredentialControls()"/>
+    <vbox class="institutional-pdf-bridge-fields">
+      <hbox class="institutional-pdf-bridge-field" align="center">
+        <label value="Username" control="institutional-pdf-bridge-username"/>
+        <html:input id="institutional-pdf-bridge-username"
+                    type="text"
+                    autocomplete="off"/>
+      </hbox>
+      <hbox class="institutional-pdf-bridge-field" align="center">
+        <label value="Password" control="institutional-pdf-bridge-password"/>
+        <html:input id="institutional-pdf-bridge-password"
+                    type="password"
+                    autocomplete="off"/>
+      </hbox>
+      <hbox align="center">
+        <button id="institutional-pdf-bridge-save-credentials"
+                label="Save credentials securely"
+                oncommand="InstitutionalPDFBridgePreferences.saveCredentials()"/>
+        <button id="institutional-pdf-bridge-remove-credentials"
+                label="Remove saved credentials"
+                oncommand="InstitutionalPDFBridgePreferences.removeCredentials()"/>
+        <label id="institutional-pdf-bridge-credential-status" value=""/>
+      </hbox>
+    </vbox>
     <checkbox id="institutional-pdf-bridge-auto-fetch"
               native="true"
               label="Automatically find PDFs for new items"

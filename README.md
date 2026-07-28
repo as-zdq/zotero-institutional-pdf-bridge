@@ -6,9 +6,9 @@ Institutional PDF Bridge adds a configurable institutional proxy resolver to Zot
 
 ## 中文说明
 
-Institutional PDF Bridge 为 Zotero 的“查找可用 PDF”增加可配置的学校或单位访问入口。它不保存账号、密码或 Cookie；认证只在机构自己的登录页面中完成，登录成功后会话由 Zotero 的隐藏浏览器使用，登录窗口会自动关闭。
+Institutional PDF Bridge 为 Zotero 的“查找可用 PDF”增加可配置的学校或单位访问入口。默认只在机构自己的登录页面中认证；也可以由用户主动把账号和密码保存到 Zotero 的受保护登录管理器。登录成功后会话由 Zotero 的隐藏浏览器使用，登录窗口会自动关闭。
 
-快速开始：从 Release 下载 `.xpi`，在 Zotero 的“工具 > 插件”中选择“从文件安装插件”，再到“设置 > Institutional PDF Bridge”填写机构网关、登录地址和代理模式。随后可对条目执行“查找可用 PDF”。新条目自动抓取默认关闭，启用后只会复用已有会话，绝不会自动弹出登录窗口。
+快速开始：从 Release 下载 `.xpi`，在 Zotero 的“工具 > 插件”中选择“从文件安装插件”，再到“设置 > Institutional PDF Bridge”填写机构网关、实际 SSO/CAS 登录地址和代理模式。随后可对条目执行“查找可用 PDF”。如需自动登录，勾选自动登录并点击“安全保存凭据”。新条目自动抓取默认关闭，启用后只会复用已有会话，绝不会自动弹出登录窗口或尝试自动登录。
 
 完整中文安装、机构适配与安全说明见 [README.zh-CN.md](README.zh-CN.md)。
 
@@ -32,7 +32,7 @@ that way as bibliography imports instead of plugin packages.
 
 ## Session behavior
 
-Credentials are entered only into the institution's own page. The plugin does not read passwords or copy cookies. After login, it creates a hidden browser in Zotero that shares the institution's browser session and closes the visible window. A session can survive as long as the institution permits its cookies to remain valid; the plugin does not override server expiry or multi-factor authentication policy. New-item lookup is disabled by default. When enabled, it waits 12 seconds so Connector metadata can settle, then silently skips items if the institutional session has expired.
+By default, credentials are entered only into the institution's own page. Users may instead opt in to saving a username and password in Zotero Password Manager. The plugin does not store credentials in preferences, read passwords from institution pages, export cookies, or log credential values. It only submits a saved credential to an HTTPS page whose origin exactly matches the configured **Login URL**; configure that field as the actual SSO/CAS login page, not merely the WebVPN gateway. After login, the plugin creates a hidden Zotero browser that shares the institutional session and closes the visible window. Server-side expiry and multi-factor authentication remain authoritative. New-item lookup is disabled by default; when enabled, it silently skips items whose existing session has expired and never starts automatic credential login.
 
 ## Development
 
@@ -50,6 +50,8 @@ The XPI is written to `dist/`. Development follows Zotero's bootstrapped plugin 
 - No analytics or telemetry.
 - No external service operated by this project.
 - No local HTTP endpoint.
+- Optional credentials are held by Zotero Password Manager, never in plugin preferences or logs.
+- Saved credentials are submitted only to the configured HTTPS login origin.
 - PDF responses must start with `%PDF-` before Zotero imports them.
 - The content actor rejects cross-origin fetch instructions.
 

@@ -3,6 +3,8 @@ var InstitutionalPDFBridgePreferences = {
 
   init() {
     this.updateMode();
+    this.updateCredentialControls();
+    this.refreshCredentialStatus();
   },
 
   updateMode() {
@@ -11,7 +13,7 @@ var InstitutionalPDFBridgePreferences = {
     document.getElementById("institutional-pdf-bridge-key").disabled = mode !== "sangfor";
   },
 
-  save() {
+  saveSettings() {
     const values = {
       enabled: document.getElementById("institutional-pdf-bridge-enabled").checked,
       institutionName: document.getElementById("institutional-pdf-bridge-name").value.trim(),
@@ -25,10 +27,77 @@ var InstitutionalPDFBridgePreferences = {
       requestRetryCount: Number(document.getElementById("institutional-pdf-bridge-retries").value),
       autoFetchNewItems: document.getElementById("institutional-pdf-bridge-auto-fetch").checked,
       autoFetchDelayMs: Number(document.getElementById("institutional-pdf-bridge-auto-delay").value),
+      autoLogin: document.getElementById("institutional-pdf-bridge-auto-login").checked,
       loginPathKeywords: document.getElementById("institutional-pdf-bridge-keywords").value.trim()
     };
     for (const [name, value] of Object.entries(values)) {
       Zotero.Prefs.set(this.prefBranch + name, value);
+    }
+  },
+
+  updateCredentialControls() {
+    const enabled = document.getElementById("institutional-pdf-bridge-auto-login").checked;
+    for (const id of [
+      "institutional-pdf-bridge-username",
+      "institutional-pdf-bridge-password",
+      "institutional-pdf-bridge-save-credentials"
+    ]) {
+      document.getElementById(id).disabled = !enabled;
+    }
+    this.refreshCredentialStatus();
+  },
+
+  async refreshCredentialStatus() {
+    const status = document.getElementById("institutional-pdf-bridge-credential-status");
+    try {
+      const stored = await Zotero.InstitutionalPDFBridge.hasStoredCredentials();
+      const enabled = document.getElementById("institutional-pdf-bridge-auto-login").checked;
+      status.value = stored
+        ? enabled ? "Credentials saved securely" : "Credentials saved; automatic sign-in is disabled"
+        : "No saved credentials";
+    } catch (error) {
+      status.value = error.message || String(error);
+    }
+  },
+
+  async saveCredentials({ quiet = false } = {}) {
+    const button = document.getElementById("institutional-pdf-bridge-save-credentials");
+    const username = document.getElementById("institutional-pdf-bridge-username").value;
+    const password = document.getElementById("institutional-pdf-bridge-password").value;
+    button.disabled = true;
+    try {
+      this.saveSettings();
+      await Zotero.InstitutionalPDFBridge.storeCredentials(username, password);
+      document.getElementById("institutional-pdf-bridge-username").value = "";
+      document.getElementById("institutional-pdf-bridge-password").value = "";
+      await this.refreshCredentialStatus();
+      if (!quiet) {
+        this.setStatus("Credentials saved in Zotero Password Manager");
+      }
+    } catch (error) {
+      Zotero.logError(error);
+      this.setStatus(error.message || String(error));
+      throw error;
+    } finally {
+      button.disabled = !document.getElementById("institutional-pdf-bridge-auto-login").checked;
+    }
+  },
+
+  async removeCredentials() {
+    const button = document.getElementById("institutional-pdf-bridge-remove-credentials");
+    button.disabled = true;
+    try {
+      this.saveSettings();
+      await Zotero.InstitutionalPDFBridge.removeStoredCredentials();
+      document.getElementById("institutional-pdf-bridge-username").value = "";
+      document.getElementById("institutional-pdf-bridge-password").value = "";
+      await this.refreshCredentialStatus();
+      this.setStatus("Saved credentials removed");
+    } catch (error) {
+      Zotero.logError(error);
+      this.setStatus(error.message || String(error));
+    } finally {
+      button.disabled = false;
     }
   },
 
@@ -37,7 +106,12 @@ var InstitutionalPDFBridgePreferences = {
     button.disabled = true;
     this.setStatus("Waiting for login...");
     try {
-      this.save();
+      this.saveSettings();
+      const username = document.getElementById("institutional-pdf-bridge-username").value;
+      const password = document.getElementById("institutional-pdf-bridge-password").value;
+      if (username || password) {
+        await this.saveCredentials({ quiet: true });
+      }
       await Zotero.InstitutionalPDFBridge.reloadConfiguration();
       await Zotero.InstitutionalPDFBridge.openLogin();
       this.setStatus("Authenticated; background session is active");

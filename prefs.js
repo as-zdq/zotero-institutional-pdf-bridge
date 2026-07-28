@@ -10,4 +10,5 @@ pref("extensions.zotero.institutionalPDFBridge.requestTimeoutMs", 180000);
 pref("extensions.zotero.institutionalPDFBridge.requestRetryCount", 1);
 pref("extensions.zotero.institutionalPDFBridge.autoFetchNewItems", false);
 pref("extensions.zotero.institutionalPDFBridge.autoFetchDelayMs", 12000);
+pref("extensions.zotero.institutionalPDFBridge.autoLogin", false);
 pref("extensions.zotero.institutionalPDFBridge.loginPathKeywords", "login,cas,auth,sso,saml,oauth");

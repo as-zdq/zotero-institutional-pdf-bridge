@@ -14,7 +14,8 @@ const PREF_NAMES = [
   "requestRetryCount",
   "autoFetchNewItems",
   "autoFetchDelayMs",
-  "loginPathKeywords"
+  "loginPathKeywords",
+  "autoLogin"
 ];
 
 var InstitutionalPDFBridge = {
@@ -87,11 +88,134 @@ var InstitutionalPDFBridge = {
       requestRetryCount,
       autoFetchNewItems: Boolean(this.getPref("autoFetchNewItems", false)),
       autoFetchDelayMs,
+      autoLogin: Boolean(this.getPref("autoLogin", false)),
       loginPathKeywords: String(this.getPref(
         "loginPathKeywords",
         "login,cas,auth,sso,saml,oauth"
       )).split(",").map((value) => value.trim().toLowerCase()).filter(Boolean)
     };
+  },
+
+  getCredentialOrigin(config = this.getConfig()) {
+    const loginURL = config.loginURL || config.gatewayURL;
+    if (!loginURL) {
+      throw new Error("Configure the institution login URL before saving credentials");
+    }
+    let url;
+    try {
+      url = new URL(loginURL);
+    } catch (error) {
+      throw new Error("Institution login URL is invalid");
+    }
+    if (url.protocol !== "https:") {
+      throw new Error("Saved credentials require an HTTPS institution login URL");
+    }
+    return url.origin;
+  },
+
+  getCredentialRealm(config = this.getConfig()) {
+    return `institutional-pdf-bridge:${this.getCredentialOrigin(config)}`;
+  },
+
+  async getStoredCredentialLogins(config = this.getConfig()) {
+    if (!Services.logins) {
+      throw new Error("Zotero Password Manager is unavailable");
+    }
+    await Services.logins.initializationPromise;
+    const origin = this.getCredentialOrigin(config);
+    const httpRealm = this.getCredentialRealm(config);
+    if (typeof Services.logins.searchLoginsAsync === "function") {
+      return Services.logins.searchLoginsAsync({ origin, httpRealm });
+    }
+    return Services.logins.findLogins(origin, null, httpRealm);
+  },
+
+  createCredentialLogin(username, password, config = this.getConfig()) {
+    const LoginInfo = Components.Constructor(
+      "@mozilla.org/login-manager/loginInfo;1",
+      "nsILoginInfo",
+      "init"
+    );
+    return new LoginInfo(
+      this.getCredentialOrigin(config),
+      null,
+      this.getCredentialRealm(config),
+      username,
+      password,
+      "username",
+      "password"
+    );
+  },
+
+  async hasStoredCredentials(config = this.getConfig()) {
+    return (await this.getStoredCredentialLogins(config)).length > 0;
+  },
+
+  async storeCredentials(username, password, config = this.getConfig()) {
+    const normalizedUsername = String(username || "").trim();
+    const normalizedPassword = String(password || "");
+    if (!normalizedUsername || !normalizedPassword) {
+      throw new Error("Enter both username and password before saving credentials");
+    }
+
+    for (const login of await this.getStoredCredentialLogins(config)) {
+      if (typeof Services.logins.removeLoginAsync === "function") {
+        await Services.logins.removeLoginAsync(login);
+      } else {
+        Services.logins.removeLogin(login);
+      }
+    }
+    const login = this.createCredentialLogin(normalizedUsername, normalizedPassword, config);
+    if (typeof Services.logins.addLoginAsync === "function") {
+      await Services.logins.addLoginAsync(login);
+    } else {
+      Services.logins.addLogin(login);
+    }
+  },
+
+  async removeStoredCredentials(config = this.getConfig()) {
+    const logins = await this.getStoredCredentialLogins(config);
+    for (const login of logins) {
+      if (typeof Services.logins.removeLoginAsync === "function") {
+        await Services.logins.removeLoginAsync(login);
+      } else {
+        Services.logins.removeLogin(login);
+      }
+    }
+    return logins.length;
+  },
+
+  async getStoredCredentials(config = this.getConfig()) {
+    const login = (await this.getStoredCredentialLogins(config))[0];
+    if (!login) {
+      return null;
+    }
+    return { username: login.username, password: login.password };
+  },
+
+  isCredentialLoginURL(value, config = this.getConfig()) {
+    try {
+      return new URL(value).origin === this.getCredentialOrigin(config);
+    } catch (error) {
+      return false;
+    }
+  },
+
+  async submitStoredCredentials(browser, state, config = this.getConfig()) {
+    if (!config.autoLogin || !state?.hasPasswordField || !this.isCredentialLoginURL(state.url, config)) {
+      return false;
+    }
+    const credentials = await this.getStoredCredentials(config);
+    if (!credentials) {
+      return false;
+    }
+    const actor = await this.waitForActor(browser);
+    const result = await actor.sendQuery("FillLogin", credentials);
+    if (!result?.submitted) {
+      throw new Error("Institution login form could not be submitted automatically");
+    }
+    Zotero.debug(`Submitted stored institutional credentials to ${this.getCredentialOrigin(config)}`);
+    return true;
   },
 
   async register(rootURI) {
@@ -574,6 +698,7 @@ var InstitutionalPDFBridge = {
       let pollTimer;
       let finished = false;
       let checking = false;
+      const autoLoginAttempts = new Set();
 
       const cleanup = () => {
         if (pollTimer) {
@@ -632,7 +757,19 @@ var InstitutionalPDFBridge = {
         try {
           const state = await this.getBrowserState(this.loginBrowser);
           this.currentURL = state.url || null;
-          if (!this.isLoginState(state, config)) {
+          if (this.isLoginState(state, config)) {
+            const loginKey = this.isCredentialLoginURL(state.url, config)
+              ? new URL(state.url).pathname
+              : null;
+            if (loginKey && !autoLoginAttempts.has(loginKey)) {
+              autoLoginAttempts.add(loginKey);
+              try {
+                await this.submitStoredCredentials(this.loginBrowser, state, config);
+              } catch (error) {
+                Zotero.debug(`Automatic institutional login skipped: ${error}`);
+              }
+            }
+          } else {
             await succeed();
           }
         } catch (error) {
