@@ -32,7 +32,7 @@ that way as bibliography imports instead of plugin packages.
 
 ## Session behavior
 
-By default, credentials are entered only into the institution's own page. Users may instead opt in to saving a username and password in Zotero Password Manager. The plugin does not store credentials in preferences, read passwords from institution pages, export cookies, or log credential values. It only submits a saved credential to an HTTPS page whose origin exactly matches the configured **Login URL**; configure that field as the actual SSO/CAS login page, not merely the WebVPN gateway. After login, the plugin creates a hidden Zotero browser that shares the institutional session and closes the visible window. Server-side expiry and multi-factor authentication remain authoritative. New-item lookup is disabled by default; when enabled, it silently skips items whose existing session has expired and never starts automatic credential login.
+Users can save credentials either by entering them in the settings pane or by submitting them in the visible institutional login page. Login-page capture requires both **Automatically sign in with saved credentials** and **Save credentials entered in the institutional login page** to be enabled. The plugin does not store credentials in preferences, export cookies, or log credential values. It saves and submits credentials only for an HTTPS page whose origin exactly matches the configured **Login URL**; configure that field as the actual SSO/CAS login page, not merely the WebVPN gateway. After login, the plugin creates a hidden Zotero browser that shares the institutional session and closes the visible window. Server-side expiry and multi-factor authentication remain authoritative. New-item lookup is disabled by default; when enabled, it silently skips items whose existing session has expired and never starts automatic credential login.
 
 ## Development
 
@@ -51,6 +51,7 @@ The XPI is written to `dist/`. Development follows Zotero's bootstrapped plugin 
 - No external service operated by this project.
 - No local HTTP endpoint.
 - Optional credentials are held by Zotero Password Manager, never in plugin preferences or logs.
+- Login-page capture is limited to the configured HTTPS login origin and requires explicit automatic-sign-in opt-in.
 - Saved credentials are submitted only to the configured HTTPS login origin.
 - PDF responses must start with `%PDF-` before Zotero imports them.
 - The content actor rejects cross-origin fetch instructions.

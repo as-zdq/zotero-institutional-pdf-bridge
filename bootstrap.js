@@ -15,7 +15,8 @@ const PREF_NAMES = [
   "autoFetchNewItems",
   "autoFetchDelayMs",
   "loginPathKeywords",
-  "autoLogin"
+  "autoLogin",
+  "captureCredentialsFromLogin"
 ];
 
 var InstitutionalPDFBridge = {
@@ -89,6 +90,7 @@ var InstitutionalPDFBridge = {
       autoFetchNewItems: Boolean(this.getPref("autoFetchNewItems", false)),
       autoFetchDelayMs,
       autoLogin: Boolean(this.getPref("autoLogin", false)),
+      captureCredentialsFromLogin: Boolean(this.getPref("captureCredentialsFromLogin", true)),
       loginPathKeywords: String(this.getPref(
         "loginPathKeywords",
         "login,cas,auth,sso,saml,oauth"
@@ -215,6 +217,20 @@ var InstitutionalPDFBridge = {
       throw new Error("Institution login form could not be submitted automatically");
     }
     Zotero.debug(`Submitted stored institutional credentials to ${this.getCredentialOrigin(config)}`);
+    return true;
+  },
+
+  async watchInteractiveLogin(browser, state, config = this.getConfig()) {
+    if (
+      !config.autoLogin ||
+      !config.captureCredentialsFromLogin ||
+      !state?.hasPasswordField ||
+      !this.isCredentialLoginURL(state.url, config)
+    ) {
+      return false;
+    }
+    const actor = await this.waitForActor(browser);
+    await actor.sendQuery("WatchLogin", {});
     return true;
   },
 
@@ -758,6 +774,11 @@ var InstitutionalPDFBridge = {
           const state = await this.getBrowserState(this.loginBrowser);
           this.currentURL = state.url || null;
           if (this.isLoginState(state, config)) {
+            try {
+              await this.watchInteractiveLogin(this.loginBrowser, state, config);
+            } catch (error) {
+              Zotero.debug(`Manual credential capture is unavailable: ${error}`);
+            }
             const loginKey = this.isCredentialLoginURL(state.url, config)
               ? new URL(state.url).pathname
               : null;
@@ -1034,6 +1055,9 @@ var InstitutionalPDFBridge = {
 
   registerWindowActor() {
     ChromeUtils.registerWindowActor(this.actorName, {
+      parent: {
+        esModuleURI: `resource://${this.resourceName}/proxy-parent.sys.mjs`
+      },
       child: { esModuleURI: this.actorChildURL },
       matches: ["https://*/*", "http://*/*"],
       allFrames: false

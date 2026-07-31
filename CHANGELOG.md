@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 - 2026-07-31
+
+- Fixed the settings-page credential fields so they remain available for manual secure storage.
+- Added optional capture of credentials manually submitted in the configured institutional HTTPS login page when automatic sign-in is enabled.
+- Restricted captured credentials to the exact configured login origin and Zotero Password Manager.
+
 ## 0.2.0 - 2026-07-28
 
 - Added optional credential storage through Zotero Password Manager.

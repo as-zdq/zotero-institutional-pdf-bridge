@@ -16,6 +16,7 @@ const files = [
   "preferences.xhtml",
   "prefs.js",
   "proxy-child.sys.mjs",
+  "proxy-parent.sys.mjs",
   "LICENSE"
 ];
 

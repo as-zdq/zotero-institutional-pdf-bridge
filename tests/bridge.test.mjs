@@ -241,6 +241,34 @@ test("saved credentials require an HTTPS login URL", async () => {
   );
 });
 
+test("manual credential capture is limited to the configured login page", async () => {
+  const preferences = {
+    "extensions.zotero.institutionalPDFBridge.loginURL": "https://login.example.edu/cas",
+    "extensions.zotero.institutionalPDFBridge.autoLogin": true,
+    "extensions.zotero.institutionalPDFBridge.captureCredentialsFromLogin": true
+  };
+  const { bridge } = loadBridge(preferences);
+  const queries = [];
+  bridge.waitForActor = async () => ({
+    sendQuery: async (name) => {
+      queries.push(name);
+      return { watching: true };
+    }
+  });
+
+  assert.equal(await bridge.watchInteractiveLogin({}, {
+    url: "https://login.example.edu/cas/login",
+    hasPasswordField: true
+  }), true);
+  assert.deepEqual(queries, ["WatchLogin"]);
+
+  assert.equal(await bridge.watchInteractiveLogin({}, {
+    url: "https://other.example.edu/cas/login",
+    hasPasswordField: true
+  }), false);
+  assert.deepEqual(queries, ["WatchLogin"]);
+});
+
 test("login actor fills a standard form and submits it", async () => {
   const source = readFileSync(new URL("../proxy-child.sys.mjs", import.meta.url), "utf8")
     .replace("export class InstitutionalPDFBridgeActorChild", "class InstitutionalPDFBridgeActorChild")
@@ -310,6 +338,55 @@ test("login actor fills a standard form and submits it", async () => {
   assert.deepEqual(username.events, ["input", "change"]);
   assert.deepEqual(password.events, ["input", "change"]);
   assert.equal(submitter.clicks, 1);
+});
+
+test("login actor captures manually submitted credentials once", async () => {
+  const source = readFileSync(new URL("../proxy-child.sys.mjs", import.meta.url), "utf8")
+    .replace("export class InstitutionalPDFBridgeActorChild", "class InstitutionalPDFBridgeActorChild")
+    .concat("\nglobalThis.InstitutionalPDFBridgeActorChild = InstitutionalPDFBridgeActorChild;");
+  const actorContext = { JSWindowActorChild: class {} };
+  createContext(actorContext);
+  runInContext(source, actorContext);
+
+  const listeners = new Map();
+  const username = { type: "text", name: "username", id: "", autocomplete: "", disabled: false, value: "alice" };
+  const password = { type: "password", name: "password", id: "", autocomplete: "", disabled: false, value: "test-password" };
+  const document = {
+    location: { href: "https://login.example.edu/cas" },
+    querySelector: (selector) => selector.startsWith('input[type="password"]') ? password : null,
+    querySelectorAll: (selector) => selector === "input" ? [username, password] : [],
+    addEventListener(type, listener) {
+      listeners.set(type, listener);
+    }
+  };
+  const captures = [];
+  const actor = new actorContext.InstitutionalPDFBridgeActorChild();
+  actor.document = document;
+  actor.sendAsyncMessage = (name, payload) => captures.push({ name, payload });
+
+  assert.equal((await actor.receiveMessage({ name: "WatchLogin" })).watching, true);
+  listeners.get("submit")({});
+  listeners.get("submit")({});
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].name, "CaptureCredentials");
+  assert.equal(captures[0].payload.url, "https://login.example.edu/cas");
+  assert.equal(captures[0].payload.username, "alice");
+  assert.equal(captures[0].payload.password, "test-password");
+});
+
+test("credential capture parent validates auto-login and the exact HTTPS origin", () => {
+  const source = readFileSync(new URL("../proxy-parent.sys.mjs", import.meta.url), "utf8");
+  assert.match(source, /getBoolPref\(PREF_BRANCH \+ "autoLogin", false\)/);
+  assert.match(source, /captureCredentialsFromLogin/);
+  assert.match(source, /new URL\(message\.data\?\.url \|\| ""\)\.origin !== origin/);
+  assert.match(source, /url\.protocol !== "https:"/);
+});
+
+test("preferences keep manual credential entry available", () => {
+  const source = readFileSync(new URL("../preferences.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /institutional-pdf-bridge-username"\)\.disabled/);
+  assert.doesNotMatch(source, /institutional-pdf-bridge-password"\)\.disabled/);
+  assert.match(source, /capture-login-credentials"\)\.disabled = !enabled/);
 });
 
 test("Sangfor-compatible host encoding remains stable", async () => {

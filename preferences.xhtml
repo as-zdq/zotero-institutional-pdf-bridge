@@ -92,6 +92,10 @@
               label="Automatically sign in with saved credentials"
               preference="extensions.zotero.institutionalPDFBridge.autoLogin"
               oncommand="InstitutionalPDFBridgePreferences.updateCredentialControls()"/>
+    <checkbox id="institutional-pdf-bridge-capture-login-credentials"
+              native="true"
+              label="Save credentials entered in the institutional login page"
+              preference="extensions.zotero.institutionalPDFBridge.captureCredentialsFromLogin"/>
     <vbox class="institutional-pdf-bridge-fields">
       <hbox class="institutional-pdf-bridge-field" align="center">
         <label value="Username" control="institutional-pdf-bridge-username"/>

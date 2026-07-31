@@ -3,8 +3,8 @@
     "institutional-pdf-bridge@as-zdq.github.io": {
       "updates": [
         {
-          "version": "0.2.0",
-          "update_link": "https://github.com/as-zdq/zotero-institutional-pdf-bridge/releases/download/v0.2.0/institutional-pdf-bridge-0.2.0.xpi",
+          "version": "0.2.1",
+          "update_link": "https://github.com/as-zdq/zotero-institutional-pdf-bridge/releases/download/v0.2.1/institutional-pdf-bridge-0.2.1.xpi",
           "applications": {
             "zotero": {
               "strict_min_version": "8.0-beta.21",

@@ -5,6 +5,7 @@ var InstitutionalPDFBridgePreferences = {
     this.updateMode();
     this.updateCredentialControls();
     this.refreshCredentialStatus();
+    window.setTimeout(() => this.updateCredentialControls(), 0);
   },
 
   updateMode() {
@@ -37,13 +38,7 @@ var InstitutionalPDFBridgePreferences = {
 
   updateCredentialControls() {
     const enabled = document.getElementById("institutional-pdf-bridge-auto-login").checked;
-    for (const id of [
-      "institutional-pdf-bridge-username",
-      "institutional-pdf-bridge-password",
-      "institutional-pdf-bridge-save-credentials"
-    ]) {
-      document.getElementById(id).disabled = !enabled;
-    }
+    document.getElementById("institutional-pdf-bridge-capture-login-credentials").disabled = !enabled;
     this.refreshCredentialStatus();
   },
 
@@ -79,7 +74,7 @@ var InstitutionalPDFBridgePreferences = {
       this.setStatus(error.message || String(error));
       throw error;
     } finally {
-      button.disabled = !document.getElementById("institutional-pdf-bridge-auto-login").checked;
+      button.disabled = false;
     }
   },
 
