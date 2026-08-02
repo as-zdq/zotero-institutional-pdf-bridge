@@ -10,6 +10,24 @@
 
 不同机构的代理系统、认证流程和资源授权并不统一，因此不能保证仅修改学校域名即可工作。欢迎提交经过验证且不含账号、Cookie 或其他凭据的机构配置。
 
+## 已知可用的机构
+
+### 大连理工大学 (DUT WebVPN)
+
+- **网关地址：** `https://webvpn.dlut.edu.cn`
+- **登录地址：** `https://webvpn.dlut.edu.cn/login`
+- **代理模式：** Sangfor-compatible WebVPN（加密主机路径）
+- **加密密钥（Sangfor key）：** `Wxzxvpn2023key@$`
+
+在插件设置页（Settings > Institutional PDF Bridge）中依次填入网关地址、登录地址，选择 **Sangfor-compatible WebVPN** 作为代理模式，填入密钥，保存即可。无需手动加密任何内容。已在 Nature、IEEE Xplore、ScienceDirect、Springer 等出版社测试通过。
+
+> ⚠️ **注意：** WebVPN 会话有效期有限，下载失败时请重新打开登录窗口认证。用户名和密码由 Zotero Password Manager 安全保存，绝不会写入插件偏好设置或日志文件。
+
+**已测试出版社：** Nature (nature.com)、IEEE Xplore、ScienceDirect (sciencedirect.com)、Springer (link.springer.com)
+**测试版本：** Zotero 7，插件 0.2.1
+**登录窗口自动关闭：** 是
+**重启后会话保持：** 是（直到服务端会话过期）
+
 ## 安装与使用
 
 1. 打开 Zotero 的“工具 > 插件”，点击右上角齿轮，选择“从文件安装插件”。

@@ -24,6 +24,22 @@ Use this mode when a gateway accepts a complete target URL. The template must co
 
 This mode is experimental because EZproxy, OpenAthens, Shibboleth, and custom gateways rewrite hosts and sessions differently.
 
+## Dalian University of Technology (大连理工大学)
+
+**Gateway:** `https://webvpn.dlut.edu.cn`
+**Login:** `https://webvpn.dlut.edu.cn/login`
+**Mode:** Sangfor-compatible WebVPN
+**Cipher key:** `Wxzxvpn2023key@$`
+
+The DLUT WebVPN uses Sangfor-compatible AES-128-CFB host encryption. Fill in the gateway URL, login URL, and cipher key above, select **Sangfor-compatible WebVPN** as the proxy mode, and save. Tested with Nature, IEEE Xplore, ScienceDirect, and Springer.
+
+> ⚠️ **Note:** Session tokens expire after a set period. Re-authenticate via the visible login window when downloads stop working. Credentials (username + student/employee ID) are stored in Zotero's Password Manager and are never written to plugin preferences or logs.
+
+**Tested publishers:** Nature (nature.com), IEEE Xplore, ScienceDirect (sciencedirect.com), Springer (link.springer.com)
+**Tested with:** Zotero 7, plugin 0.2.1
+**Login window closes:** Yes
+**Session survives restart:** Yes (until server-side expiry)
+
 ## Contributing a tested institution
 
 Open a pull request containing:
