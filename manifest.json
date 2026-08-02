@@ -1,10 +1,10 @@
 {
   "manifest_version": 2,
   "name": "Institutional PDF Bridge",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "description": "Uses a configured institutional proxy to find full-text PDFs from Zotero.",
   "author": "Institutional PDF Bridge contributors",
-  "homepage_url": "https://github.com/as-zdq/zotero-institutional-pdf-bridge",
+  "homepage_url": "https://github.com/fusman60/zotero-institutional-pdf-bridge",
   "icons": {
     "48": "icon.svg",
     "96": "icon.svg"
@@ -12,7 +12,7 @@
   "applications": {
     "zotero": {
       "id": "institutional-pdf-bridge@as-zdq.github.io",
-      "update_url": "https://raw.githubusercontent.com/as-zdq/zotero-institutional-pdf-bridge/main/update.json",
+      "update_url": "https://raw.githubusercontent.com/fusman60/zotero-institutional-pdf-bridge/main/update.json",
       "strict_min_version": "8.0-beta.21",
       "strict_max_version": "10.99.99"
     }

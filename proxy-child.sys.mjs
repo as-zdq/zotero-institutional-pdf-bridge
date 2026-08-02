@@ -17,7 +17,14 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
         name.includes("login")
       );
     });
-    return { passwordField, usernameField };
+
+    // Find the submit button: prefer the CAS "index_login_btn" button which triggers
+    // the RSA-encrypted AJAX login, then fall back to any submit button.
+    const submitButton =
+      this.document.getElementById("index_login_btn") ||
+      this.document.querySelector('button[type="submit"], input[type="submit"]');
+
+    return { passwordField, usernameField, submitButton };
   }
 
   captureCredentialSubmission() {
@@ -51,8 +58,10 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
       }
     }, true);
     this.document.addEventListener("click", (event) => {
-      const target = event.target?.closest?.('button, input[type="submit"]');
-      if (target && (target.type === "submit" || target.matches?.('button:not([type]), button[type="submit"]'))) {
+      const target = event.target?.closest?.(
+        'button, input[type="submit"], a[id="index_login_btn"], #index_login_btn'
+      );
+      if (target) {
         this.captureCredentialSubmission();
       }
     }, true);
@@ -73,7 +82,7 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
 
     if (message.name === "FillLogin") {
       const { username, password } = message.data;
-      const { passwordField, usernameField } = this.getLoginFields();
+      const { passwordField, usernameField, submitButton } = this.getLoginFields();
       if (!passwordField) {
         throw new Error("Institution login password field was not found");
       }
@@ -97,19 +106,64 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
       }
       setValue(passwordField, password);
 
-      const form = passwordField.form || usernameField?.form;
-      const submitter = form?.querySelector('button[type="submit"], input[type="submit"]') ||
-        this.document.querySelector('button[type="submit"], input[type="submit"]');
-      if (submitter) {
-        submitter.click();
-      } else if (form?.requestSubmit) {
-        form.requestSubmit();
-      } else if (form) {
-        form.submit();
+      // Prefer the explicit submit button (e.g. CAS "index_login_btn" which triggers
+      // RSA-encrypted AJAX login). This handles forms where <input> elements are
+      // siblings of <form> rather than children — in that case passwordField.form
+      // would be null and requestSubmit() would not fire the onsubmit handler.
+      if (submitButton) {
+        submitButton.click();
       } else {
-        throw new Error("Institution login form was not found");
+        // Fallback: try to find the enclosing form by its action attribute.
+        const form =
+          passwordField.form ||
+          usernameField?.form ||
+          this.document.querySelector('form[action*="login"], form[action*="cas"]');
+        if (form?.requestSubmit) {
+          form.requestSubmit();
+        } else if (form) {
+          form.submit();
+        } else {
+          throw new Error("Institution login form was not found");
+        }
       }
       return { submitted: true, usernameFilled: Boolean(usernameField) };
+    }
+
+    if (message.name === "ExportCookies") {
+      try {
+        const raw = this.document.cookie;
+        if (!raw) {
+          return [];
+        }
+        return raw.split(";").map((pair) => {
+          const eq = pair.indexOf("=");
+          const name = pair.slice(0, eq).trim();
+          const value = pair.slice(eq + 1).trim();
+          return { name, value };
+        });
+      } catch (error) {
+        Zotero.debug(`ExportCookies failed: ${error}`);
+        return [];
+      }
+    }
+
+    if (message.name === "ImportCookies") {
+      try {
+        const { cookieString } = message.data || {};
+        if (!cookieString) {
+          return;
+        }
+        for (const cookie of cookieString.split(";").map((c) => c.trim()).filter(Boolean)) {
+          try {
+            this.document.cookie = cookie;
+          } catch (e) {
+            // HttpOnly or domain-restricted cookies; ignore.
+          }
+        }
+      } catch (error) {
+        Zotero.debug(`ImportCookies failed: ${error}`);
+      }
+      return;
     }
 
     if (message.name !== "Fetch") {
