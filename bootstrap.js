@@ -681,7 +681,22 @@ var InstitutionalPDFBridge = {
     return this.openInteractiveLogin(config);
   },
 
-  async createHiddenSession(sourceURL) {
+  async exportBrowserCookies(browser) {
+    try {
+      const actor = await this.waitForActor(browser);
+      const cookies = await actor.sendQuery("ExportCookies", {});
+      if (!cookies || !Array.isArray(cookies)) {
+        return "";
+      }
+      // Return a format usable by injectBrowserCookies: "name1=val1; name2=val2; ..."
+      return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    } catch (error) {
+      Zotero.debug(`Cookie export failed: ${error}`);
+      return "";
+    }
+  }
+
+  async createHiddenSession(sourceURL, inheritCookies = "") {
     await this.destroyHiddenBrowser();
     const { HiddenBrowser } = ChromeUtils.importESModule(
       "chrome://zotero/content/HiddenBrowser.mjs"
@@ -691,6 +706,20 @@ var InstitutionalPDFBridge = {
     this.hiddenBrowser = browser;
     this.sessionBrowser = browser;
     await browser.load(sourceURL);
+
+    // Inject session cookies inherited from the authenticated visible browser.
+    // This is needed because the hidden browser may have a fresh cookie jar on some
+    // Zotero/Firefox configurations, so the WebVPN CAS session would otherwise be lost.
+    if (inheritCookies) {
+      try {
+        const cookieActor = await this.waitForActor(browser);
+        await cookieActor.sendQuery("ImportCookies", { cookieString: inheritCookies });
+        Zotero.debug("Inherited session cookies from visible login browser");
+      } catch (error) {
+        Zotero.debug(`Cookie import failed: ${error}`);
+      }
+    }
+
     try {
       await browser.waitForDocument({ allowInteractiveAfter: 1500 });
     } catch (error) {
@@ -738,7 +767,13 @@ var InstitutionalPDFBridge = {
         }
         try {
           const visibleState = await this.getBrowserState(this.loginBrowser);
-          const hiddenState = await this.createHiddenSession(visibleState.url || config.gatewayURL);
+          // Inherit session cookies from the authenticated visible browser into the
+          // hidden session so that background PDF downloads work without re-authentication.
+          const cookieString = await this.exportBrowserCookies(this.loginBrowser);
+          const hiddenState = await this.createHiddenSession(
+            visibleState.url || config.gatewayURL,
+            cookieString
+          );
           if (this.isLoginState(hiddenState, config)) {
             throw new Error("The authenticated session could not be transferred to a hidden browser");
           }

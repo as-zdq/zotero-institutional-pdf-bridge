@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.3 - 2026-08-02
+
+- Fixed login form submission for institutions using CAS with RSA-encrypted password fields (e.g. DLUT WebVPN): the plugin now finds the explicit submit button (`#index_login_btn`) before falling back to `requestSubmit()`, ensuring the custom AJAX login handler is triggered rather than sending plaintext credentials.
+- Fixed session transfer between the visible login window and the background hidden browser: after a successful login, the WebVPN session cookies are now exported from the visible browser and injected into the hidden session, so background PDF downloads work without requiring a second authentication.
+- Added credential capture for CAS-style `<a>` submit buttons (previously only `button` and `input[type=submit]` were monitored).
+- Updated DLUT WebVPN login URL in documentation to `https://webvpn.dlut.edu.cn/login?cas_login=true` (the default `/login` page shows a WeChat QR code; the CAS username/password form requires `?cas_login=true`).
+
+## 0.2.2 - 2026-08-02
+
+- Initial DLUT WebVPN support with Sangfor-compatible AES-128-CFB encryption (key: `Wxzxvpn2023key@$`).
+
 ## 0.2.1 - 2026-07-31
 
 - Fixed the settings-page credential fields so they remain available for manual secure storage.

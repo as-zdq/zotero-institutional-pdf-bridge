@@ -15,7 +15,9 @@
 ### 大连理工大学 (DUT WebVPN)
 
 - **网关地址：** `https://webvpn.dlut.edu.cn`
-- **登录地址：** `https://webvpn.dlut.edu.cn/login`
+- **登录地址：** `https://webvpn.dlut.edu.cn/login?cas_login=true`
+
+> ⚠️ **重要提示：** 默认登录页 `/login` 显示微信二维码。请务必使用 `?cas_login=true` 参数打开**统一身份认证（CAS）登录页面**，输入学号/工号和密码。
 - **代理模式：** Sangfor-compatible WebVPN（加密主机路径）
 - **加密密钥（Sangfor key）：** `Wxzxvpn2023key@$`
 

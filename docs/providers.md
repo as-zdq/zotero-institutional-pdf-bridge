@@ -27,11 +27,13 @@ This mode is experimental because EZproxy, OpenAthens, Shibboleth, and custom ga
 ## Dalian University of Technology (大连理工大学)
 
 **Gateway:** `https://webvpn.dlut.edu.cn`
-**Login:** `https://webvpn.dlut.edu.cn/login`
+**Login:** `https://webvpn.dlut.edu.cn/login?cas_login=true`
 **Mode:** Sangfor-compatible WebVPN
 **Cipher key:** `Wxzxvpn2023key@$`
 
 The DLUT WebVPN uses Sangfor-compatible AES-128-CFB host encryption. Fill in the gateway URL, login URL, and cipher key above, select **Sangfor-compatible WebVPN** as the proxy mode, and save. Tested with Nature, IEEE Xplore, ScienceDirect, and Springer.
+
+> ⚠️ **Important:** The default WebVPN login page (`/login`) shows a WeChat QR code. Use `?cas_login=true` to show the **username/password form** — this is the URL the plugin requires.
 
 > ⚠️ **Note:** Session tokens expire after a set period. Re-authenticate via the visible login window when downloads stop working. Credentials (username + student/employee ID) are stored in Zotero's Password Manager and are never written to plugin preferences or logs.
 
