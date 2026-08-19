@@ -16,6 +16,7 @@ const PREF_NAMES = [
   "autoFetchDelayMs",
   "loginPathKeywords",
   "autoLogin",
+  "checkLoginOnStartup",
   "captureCredentialsFromLogin"
 ];
 
@@ -72,12 +73,12 @@ var InstitutionalPDFBridge = {
       try {
         gatewayOrigin = new URL(gatewayURL).origin;
       } catch (error) {
-        throw new Error("Institutional proxy gateway URL is invalid");
+        throw new Error("机构代理网关 URL 无效");
       }
     }
     return {
       enabled: Boolean(this.getPref("enabled", true)),
-      institutionName: String(this.getPref("institutionName", "Institutional access")),
+      institutionName: String(this.getPref("institutionName", "机构访问")),
       gatewayURL,
       gatewayOrigin,
       loginURL,
@@ -89,7 +90,8 @@ var InstitutionalPDFBridge = {
       requestRetryCount,
       autoFetchNewItems: Boolean(this.getPref("autoFetchNewItems", false)),
       autoFetchDelayMs,
-      autoLogin: Boolean(this.getPref("autoLogin", false)),
+      autoLogin: Boolean(this.getPref("autoLogin", true)),
+      checkLoginOnStartup: Boolean(this.getPref("checkLoginOnStartup", true)),
       captureCredentialsFromLogin: Boolean(this.getPref("captureCredentialsFromLogin", true)),
       loginPathKeywords: String(this.getPref(
         "loginPathKeywords",
@@ -101,16 +103,16 @@ var InstitutionalPDFBridge = {
   getCredentialOrigin(config = this.getConfig()) {
     const loginURL = config.loginURL || config.gatewayURL;
     if (!loginURL) {
-      throw new Error("Configure the institution login URL before saving credentials");
+      throw new Error("请先配置机构登录 URL，再保存凭据");
     }
     let url;
     try {
       url = new URL(loginURL);
     } catch (error) {
-      throw new Error("Institution login URL is invalid");
+      throw new Error("机构登录 URL 无效");
     }
     if (url.protocol !== "https:") {
-      throw new Error("Saved credentials require an HTTPS institution login URL");
+      throw new Error("保存凭据要求机构登录 URL 使用 HTTPS");
     }
     return url.origin;
   },
@@ -121,7 +123,7 @@ var InstitutionalPDFBridge = {
 
   async getStoredCredentialLogins(config = this.getConfig()) {
     if (!Services.logins) {
-      throw new Error("Zotero Password Manager is unavailable");
+      throw new Error("Zotero 密码管理器不可用");
     }
     await Services.logins.initializationPromise;
     const origin = this.getCredentialOrigin(config);
@@ -157,7 +159,7 @@ var InstitutionalPDFBridge = {
     const normalizedUsername = String(username || "").trim();
     const normalizedPassword = String(password || "");
     if (!normalizedUsername || !normalizedPassword) {
-      throw new Error("Enter both username and password before saving credentials");
+      throw new Error("保存凭据前请输入用户名和密码");
     }
 
     for (const login of await this.getStoredCredentialLogins(config)) {
@@ -214,7 +216,7 @@ var InstitutionalPDFBridge = {
     const actor = await this.waitForActor(browser);
     const result = await actor.sendQuery("FillLogin", credentials);
     if (!result?.submitted) {
-      throw new Error("Institution login form could not be submitted automatically");
+      throw new Error("无法自动提交机构登录表单");
     }
     Zotero.debug(`Submitted stored institutional credentials to ${this.getCredentialOrigin(config)}`);
     return true;
@@ -248,10 +250,30 @@ var InstitutionalPDFBridge = {
       src: rootURI + "preferences.xhtml",
       scripts: [rootURI + "preferences.js"],
       stylesheets: [rootURI + "preferences.css"],
-      label: "Institutional PDF Bridge",
+      label: "机构 PDF 桥接",
       image: rootURI + "icon.svg"
     });
     Zotero.InstitutionalPDFBridge = this;
+    this.scheduleStartupLoginCheck();
+  },
+
+  scheduleStartupLoginCheck() {
+    return (async () => {
+      await Zotero.Promise.delay(1500);
+      if (this.isShuttingDown) {
+        return;
+      }
+      const config = this.getConfig();
+      if (!config.enabled || !config.autoLogin || !config.checkLoginOnStartup) {
+        return;
+      }
+      try {
+        await this.ensureSessionBrowser({ interactive: false });
+        Zotero.debug("机构代理启动登录检查完成");
+      } catch (error) {
+        Zotero.debug(`机构代理启动登录检查未完成：${error}`);
+      }
+    })().catch((error) => Zotero.logError(error));
   },
 
   migrateDoublePrefixedPreferences() {
@@ -477,7 +499,7 @@ var InstitutionalPDFBridge = {
 
     const config = this.getConfig();
     if (!config.gatewayURL) {
-      throw new Error("Configure an institutional gateway before looking up PDFs");
+      throw new Error("查找 PDF 前请先配置机构网关");
     }
     Zotero.debug(`Looking for ${doi || sourceURL} via ${config.institutionName}`);
     const pageURL = await this.toProxyURL(sourceURL, config);
@@ -533,13 +555,13 @@ var InstitutionalPDFBridge = {
 
     if (!interactive) {
       await this.clearSession();
-      throw new Error("Institutional proxy login is required for automatic lookup");
+      throw new Error("自动查找需要先登录机构代理");
     }
     await this.clearSession();
     await this.ensureSessionBrowser({ interactive: true, forceLogin: true });
     page = await this.fetchPage(pageURL, config, true, true);
     if (this.isLoginPage(page, config)) {
-      throw new Error("Institutional proxy login was not completed");
+      throw new Error("机构代理登录尚未完成");
     }
     return page;
   },
@@ -644,10 +666,10 @@ var InstitutionalPDFBridge = {
   async ensureSessionBrowser({ interactive = true, forceLogin = false } = {}) {
     const config = this.getConfig();
     if (!config.enabled) {
-      throw new Error("Institutional PDF Bridge is disabled");
+      throw new Error("机构 PDF 桥接已禁用");
     }
     if (!config.gatewayURL) {
-      throw new Error("Institutional proxy gateway URL is not configured");
+      throw new Error("尚未配置机构代理网关 URL");
     }
 
     if (!forceLogin && this.sessionBrowser) {
@@ -676,7 +698,7 @@ var InstitutionalPDFBridge = {
     }
 
     if (!interactive) {
-      throw new Error("Institutional proxy login is required");
+      throw new Error("需要登录机构代理");
     }
     return this.openInteractiveLogin(config);
   },
@@ -696,7 +718,24 @@ var InstitutionalPDFBridge = {
     } catch (error) {
       Zotero.debug(`Hidden proxy browser document wait failed: ${error}`);
     }
-    const state = await this.getBrowserState(browser);
+    let state = await this.getBrowserState(browser);
+    const config = this.getConfig();
+    if (this.isLoginState(state, config)) {
+      try {
+        if (await this.submitStoredCredentials(browser, state, config)) {
+          for (let attempt = 0; attempt < 120; attempt++) {
+            await Zotero.Promise.delay(250);
+            state = await this.getBrowserState(browser);
+            if (!this.isLoginState(state, config)) {
+              Zotero.debug("已使用保存的凭据静默登录机构代理");
+              break;
+            }
+          }
+        }
+      } catch (error) {
+        Zotero.debug(`机构代理静默登录失败：${error}`);
+      }
+    }
     this.currentURL = state.url || null;
     return state;
   },
@@ -740,7 +779,7 @@ var InstitutionalPDFBridge = {
           const visibleState = await this.getBrowserState(this.loginBrowser);
           const hiddenState = await this.createHiddenSession(visibleState.url || config.gatewayURL);
           if (this.isLoginState(hiddenState, config)) {
-            throw new Error("The authenticated session could not be transferred to a hidden browser");
+            throw new Error("无法将已认证会话转移到后台浏览器");
           }
           Zotero.debug("Institutional proxy session transferred to hidden browser");
           finished = true;
@@ -802,13 +841,13 @@ var InstitutionalPDFBridge = {
       const initializeViewer = () => {
         this.loginBrowser = win.document.querySelector("browser");
         if (!this.loginBrowser) {
-          fail("Institutional proxy login browser could not be created");
+          fail("无法创建机构代理登录浏览器");
           return;
         }
         pollTimer = win.setInterval(checkPage, 750);
         win.addEventListener("unload", () => {
           if (!finished) {
-            fail("Institutional proxy login window was closed before authentication");
+            fail("机构代理登录窗口在认证完成前已关闭");
           }
         }, { once: true });
         checkPage();
@@ -843,7 +882,7 @@ var InstitutionalPDFBridge = {
       await Zotero.Promise.delay(100);
     }
     const detail = lastError?.message ? `: ${lastError.message}` : "";
-    throw new Error(`Institutional proxy content actor is not ready${detail}`);
+    throw new Error(`机构代理内容组件尚未就绪${detail}`);
   },
 
   async openLogin() {
@@ -956,7 +995,7 @@ var InstitutionalPDFBridge = {
       await Zotero.File.putContentsAsync(path, blob);
       const sample = await Zotero.File.getContentsAsync(path, null, 5);
       if (sample !== "%PDF-") {
-        throw new Error("Institutional proxy response was not a PDF");
+        throw new Error("机构代理返回的内容不是 PDF");
       }
     } catch (error) {
       await Zotero.File.removeIfExists(path);
@@ -967,7 +1006,7 @@ var InstitutionalPDFBridge = {
   async toProxyURL(value, config = this.getConfig()) {
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol)) {
-      throw new Error(`Unsupported proxy target protocol: ${url.protocol}`);
+      throw new Error(`不支持的代理目标协议：${url.protocol}`);
     }
     if (this.isLikelyProxiedURL(url, config)) {
       return url.href;
@@ -978,17 +1017,17 @@ var InstitutionalPDFBridge = {
     }
     if (config.mode === "template") {
       if (!config.urlTemplate.includes("{url}")) {
-        throw new Error("Proxy URL template must contain {url}");
+        throw new Error("代理 URL 模板必须包含 {url}");
       }
       return config.urlTemplate
         .replaceAll("{gateway}", config.gatewayURL)
         .replaceAll("{url}", encodeURIComponent(url.href));
     }
     if (config.mode !== "sangfor") {
-      throw new Error(`Unsupported institutional proxy mode: ${config.mode}`);
+      throw new Error(`不支持的机构代理模式：${config.mode}`);
     }
     if (config.cipherKey.length !== 16 || /[^\x20-\x7E]/.test(config.cipherKey)) {
-      throw new Error("Sangfor-compatible cipher key must be 16 ASCII characters");
+      throw new Error("深信服兼容密钥必须是 16 个 ASCII 字符");
     }
 
     const protocol = url.protocol.slice(0, -1);

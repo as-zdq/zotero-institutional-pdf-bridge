@@ -1,5 +1,5 @@
 pref("extensions.zotero.institutionalPDFBridge.enabled", true);
-pref("extensions.zotero.institutionalPDFBridge.institutionName", "Institutional access");
+pref("extensions.zotero.institutionalPDFBridge.institutionName", "机构访问");
 pref("extensions.zotero.institutionalPDFBridge.gatewayURL", "");
 pref("extensions.zotero.institutionalPDFBridge.loginURL", "");
 pref("extensions.zotero.institutionalPDFBridge.mode", "sangfor");
@@ -10,6 +10,7 @@ pref("extensions.zotero.institutionalPDFBridge.requestTimeoutMs", 180000);
 pref("extensions.zotero.institutionalPDFBridge.requestRetryCount", 1);
 pref("extensions.zotero.institutionalPDFBridge.autoFetchNewItems", false);
 pref("extensions.zotero.institutionalPDFBridge.autoFetchDelayMs", 12000);
-pref("extensions.zotero.institutionalPDFBridge.autoLogin", false);
+pref("extensions.zotero.institutionalPDFBridge.autoLogin", true);
+pref("extensions.zotero.institutionalPDFBridge.checkLoginOnStartup", true);
 pref("extensions.zotero.institutionalPDFBridge.captureCredentialsFromLogin", true);
 pref("extensions.zotero.institutionalPDFBridge.loginPathKeywords", "login,cas,auth,sso,saml,oauth");

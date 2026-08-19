@@ -75,7 +75,7 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
       const { username, password } = message.data;
       const { passwordField, usernameField } = this.getLoginFields();
       if (!passwordField) {
-        throw new Error("Institution login password field was not found");
+        throw new Error("未找到机构登录密码输入框");
       }
 
       const setValue = (field, value) => {
@@ -107,19 +107,19 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
       } else if (form) {
         form.submit();
       } else {
-        throw new Error("Institution login form was not found");
+        throw new Error("未找到机构登录表单");
       }
       return { submitted: true, usernameFilled: Boolean(usernameField) };
     }
 
     if (message.name !== "Fetch") {
-      throw new Error(`Unsupported institutional proxy actor message: ${message.name}`);
+      throw new Error(`不支持的机构代理消息：${message.name}`);
     }
 
     const { url, timeoutMs = 45000 } = message.data;
     const target = new this.contentWindow.URL(url, this.document.location.href);
     if (target.origin !== this.document.location.origin) {
-      throw new Error("Cross-origin proxy fetch was blocked");
+      throw new Error("已阻止跨域代理请求");
     }
 
     const controller = new this.contentWindow.AbortController();

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3 - 2026-08-19
+
+- Added a default-enabled startup check that restores the institutional session and signs in silently with saved credentials.
+- Reused the same silent session validation before missing-PDF lookups without opening a login window.
+- Kept newly saved credentials visible as masked values in the settings page.
+- Added a Chinese settings interface and Chinese user-facing errors.
+
 ## 0.2.1 - 2026-07-31
 
 - Fixed the settings-page credential fields so they remain available for manual secure storage.

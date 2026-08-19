@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "name": "Institutional PDF Bridge",
-  "version": "0.2.1",
-  "description": "Uses a configured institutional proxy to find full-text PDFs from Zotero.",
+  "name": "机构 PDF 桥接",
+  "version": "0.2.3",
+  "description": "通过配置的机构代理为 Zotero 查找全文 PDF。",
   "author": "Institutional PDF Bridge contributors",
   "homepage_url": "https://github.com/as-zdq/zotero-institutional-pdf-bridge",
   "icons": {

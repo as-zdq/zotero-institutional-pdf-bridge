@@ -7,7 +7,7 @@ function getStringPref(name, fallback = "") {
 }
 
 function isCaptureEnabled() {
-  return Services.prefs.getBoolPref(PREF_BRANCH + "autoLogin", false) &&
+  return Services.prefs.getBoolPref(PREF_BRANCH + "autoLogin", true) &&
     Services.prefs.getBoolPref(PREF_BRANCH + "captureCredentialsFromLogin", true);
 }
 
@@ -15,7 +15,7 @@ function getCredentialContext() {
   const loginURL = getStringPref("loginURL") || getStringPref("gatewayURL");
   const url = new URL(loginURL);
   if (url.protocol !== "https:") {
-    throw new Error("Institution credential capture requires an HTTPS login URL");
+    throw new Error("机构凭据保存要求登录 URL 使用 HTTPS");
   }
   return {
     origin: url.origin,
@@ -35,7 +35,7 @@ function createLogin(origin, realm, username, password) {
 export class InstitutionalPDFBridgeActorParent extends JSWindowActorParent {
   async receiveMessage(message) {
     if (message.name !== "CaptureCredentials") {
-      throw new Error(`Unsupported institutional proxy parent message: ${message.name}`);
+      throw new Error(`不支持的机构代理父级消息：${message.name}`);
     }
     if (!isCaptureEnabled()) {
       return { saved: false };

@@ -237,8 +237,32 @@ test("saved credentials require an HTTPS login URL", async () => {
   });
   await assert.rejects(
     bridge.storeCredentials("alice", "test-password"),
-    /require an HTTPS institution login URL/
+    /HTTPS/
   );
+});
+
+test("startup login check is enabled by default and stays non-interactive", async () => {
+  const { bridge } = loadBridge({
+    "extensions.zotero.institutionalPDFBridge.gatewayURL": "https://proxy.example.edu"
+  });
+  const calls = [];
+  bridge.ensureSessionBrowser = async (options) => calls.push(options);
+  await bridge.scheduleStartupLoginCheck();
+  assert.equal(bridge.getConfig().autoLogin, true);
+  assert.equal(bridge.getConfig().checkLoginOnStartup, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].interactive, false);
+});
+
+test("startup login check respects its setting", async () => {
+  const { bridge } = loadBridge({
+    "extensions.zotero.institutionalPDFBridge.gatewayURL": "https://proxy.example.edu",
+    "extensions.zotero.institutionalPDFBridge.checkLoginOnStartup": false
+  });
+  let called = false;
+  bridge.ensureSessionBrowser = async () => { called = true; };
+  await bridge.scheduleStartupLoginCheck();
+  assert.equal(called, false);
 });
 
 test("manual credential capture is limited to the configured login page", async () => {
@@ -376,7 +400,7 @@ test("login actor captures manually submitted credentials once", async () => {
 
 test("credential capture parent validates auto-login and the exact HTTPS origin", () => {
   const source = readFileSync(new URL("../proxy-parent.sys.mjs", import.meta.url), "utf8");
-  assert.match(source, /getBoolPref\(PREF_BRANCH \+ "autoLogin", false\)/);
+  assert.match(source, /getBoolPref\(PREF_BRANCH \+ "autoLogin", true\)/);
   assert.match(source, /captureCredentialsFromLogin/);
   assert.match(source, /new URL\(message\.data\?\.url \|\| ""\)\.origin !== origin/);
   assert.match(source, /url\.protocol !== "https:"/);
@@ -384,9 +408,17 @@ test("credential capture parent validates auto-login and the exact HTTPS origin"
 
 test("preferences keep manual credential entry available", () => {
   const source = readFileSync(new URL("../preferences.js", import.meta.url), "utf8");
+  const markup = readFileSync(new URL("../preferences.xhtml", import.meta.url), "utf8");
+  const saveCredentialsSource = source.slice(
+    source.indexOf("async saveCredentials"),
+    source.indexOf("async removeCredentials")
+  );
   assert.doesNotMatch(source, /institutional-pdf-bridge-username"\)\.disabled/);
   assert.doesNotMatch(source, /institutional-pdf-bridge-password"\)\.disabled/);
+  assert.doesNotMatch(saveCredentialsSource, /institutional-pdf-bridge-password"\)\.value = ""/);
   assert.match(source, /capture-login-credentials"\)\.disabled = !enabled/);
+  assert.match(markup, /institutional-pdf-bridge-password"[\s\S]*?type="password"/);
+  assert.match(markup, /institutional-pdf-bridge-startup-login/);
 });
 
 test("Sangfor-compatible host encoding remains stable", async () => {
@@ -475,7 +507,7 @@ test("invalid PDF output is removed before native fallback", async () => {
   const { bridge, files } = loadBridge();
   await assert.rejects(
     bridge.writeValidatedPDF("/tmp/not-a-pdf", "<html>login</html>"),
-    /was not a PDF/
+    /不是 PDF/
   );
   assert.equal(files.has("/tmp/not-a-pdf"), false);
 });
