@@ -58,11 +58,11 @@ var InstitutionalPDFBridge = {
     const mode = String(this.getPref("mode", "sangfor"));
     const requestTimeoutMs = Math.max(
       5000,
-      Math.min(300000, Number(this.getPref("requestTimeoutMs", 180000)) || 180000)
+      Math.min(60000, Number(this.getPref("requestTimeoutMs", 30000)) || 30000)
     );
     const requestRetryCount = Math.max(
       0,
-      Math.min(3, Math.floor(Number(this.getPref("requestRetryCount", 1)) || 0))
+      Math.min(3, Math.floor(Number(this.getPref("requestRetryCount", 0)) || 0))
     );
     const autoFetchDelayMs = Math.max(
       2000,
@@ -215,11 +215,31 @@ var InstitutionalPDFBridge = {
     }
     const actor = await this.waitForActor(browser);
     const result = await actor.sendQuery("FillLogin", credentials);
+    this.lastAutoLoginStatus = {
+      submitted: Boolean(result?.submitted),
+      usernameFilled: Boolean(result?.usernameFilled),
+      origin: this.getCredentialOrigin(config)
+    };
     if (!result?.submitted) {
       throw new Error("无法自动提交机构登录表单");
     }
     Zotero.debug(`Submitted stored institutional credentials to ${this.getCredentialOrigin(config)}`);
     return true;
+  },
+
+  async tryStoredCredentialLogin(browser, state, config, attempts) {
+    if (!this.isCredentialLoginURL(state?.url, config)) {
+      return false;
+    }
+    const loginKey = new URL(state.url).pathname;
+    if (attempts.has(loginKey)) {
+      return false;
+    }
+    const submitted = await this.submitStoredCredentials(browser, state, config);
+    if (submitted) {
+      attempts.add(loginKey);
+    }
+    return submitted;
   },
 
   async watchInteractiveLogin(browser, state, config = this.getConfig()) {
@@ -239,7 +259,7 @@ var InstitutionalPDFBridge = {
   async register(rootURI) {
     this.isShuttingDown = false;
     this.migrateDoublePrefixedPreferences();
-    this.migrateLegacyRequestTimeout();
+    this.migrateLegacyRequestPolicy();
     this.registerResourceRoot(rootURI);
     this.actorChildURL = `resource://${this.resourceName}/proxy-child.sys.mjs`;
     this.registerWindowActor();
@@ -290,14 +310,21 @@ var InstitutionalPDFBridge = {
     }
   },
 
-  migrateLegacyRequestTimeout() {
-    const name = PREF_BRANCH + "requestTimeoutMs";
+  migrateLegacyRequestPolicy() {
+    const timeoutName = PREF_BRANCH + "requestTimeoutMs";
     if (
-      Zotero.Prefs.prefHasUserValue(name) &&
-      Number(Zotero.Prefs.get(name)) === 45000
+      Zotero.Prefs.prefHasUserValue(timeoutName) &&
+      Number(Zotero.Prefs.get(timeoutName)) > 60000
     ) {
-      // Version 1.0.3 wrote its old 45-second default as a user preference.
-      Zotero.Prefs.set(name, 180000);
+      Zotero.Prefs.set(timeoutName, 30000);
+    }
+
+    const retryName = PREF_BRANCH + "requestRetryCount";
+    if (
+      Zotero.Prefs.prefHasUserValue(retryName) &&
+      Number(Zotero.Prefs.get(retryName)) === 1
+    ) {
+      Zotero.Prefs.set(retryName, 0);
     }
   },
 
@@ -453,6 +480,7 @@ var InstitutionalPDFBridge = {
 
       for (const resolver of proxyResolvers) {
         try {
+          options?.onAccessMethodStart?.(bridge.getConfig().institutionName);
           const result = await bridge.downloadViaProxy(resolver.__institutionalProxyItem, path, {
             interactive: resolver.__institutionalProxyInteractive !== false
           });
@@ -502,8 +530,21 @@ var InstitutionalPDFBridge = {
       throw new Error("查找 PDF 前请先配置机构网关");
     }
     Zotero.debug(`Looking for ${doi || sourceURL} via ${config.institutionName}`);
+    const deadline = Date.now() + config.requestTimeoutMs;
+    const nextRequestConfig = () => {
+      const remaining = deadline - Date.now();
+      return remaining >= 1000 ? {
+        ...config,
+        requestTimeoutMs: Math.min(15000, remaining),
+        requestRetryCount: 0
+      } : null;
+    };
     const pageURL = await this.toProxyURL(sourceURL, config);
-    const page = await this.getAuthenticatedPage(pageURL, config, interactive);
+    const pageConfig = nextRequestConfig();
+    if (!pageConfig) {
+      return false;
+    }
+    const page = await this.getAuthenticatedPage(pageURL, pageConfig, interactive);
 
     if (this.isPDFContentType(page.contentType)) {
       await this.writeValidatedPDF(path, page.blob);
@@ -519,9 +560,13 @@ var InstitutionalPDFBridge = {
       doi
     );
     for (const candidate of candidates) {
+      const requestConfig = nextRequestConfig();
+      if (!requestConfig) {
+        break;
+      }
       const proxiedCandidate = await this.toProxyURL(candidate.url, config);
       try {
-        const response = await this.fetchPage(proxiedCandidate, config, false, interactive);
+        const response = await this.fetchPage(proxiedCandidate, requestConfig, false, interactive);
         await this.writeValidatedPDF(path, response.blob);
         return this.makeDownloadResult(
           candidate.originalURL || candidate.url,
@@ -651,13 +696,19 @@ var InstitutionalPDFBridge = {
   },
 
   isLoginState(state, config) {
-    if (!state?.url || state.url === "about:blank" || state.hasPasswordField) {
+    if (!state?.url || state.url === "about:blank") {
       return true;
     }
     try {
       const url = new URL(state.url);
       const haystack = `${url.hostname}${url.pathname}`.toLowerCase();
-      return config.loginPathKeywords.some((keyword) => haystack.includes(keyword));
+      if (config.loginPathKeywords.some((keyword) => haystack.includes(keyword))) {
+        return true;
+      }
+      if (url.origin === config.gatewayOrigin && (url.pathname === "/" || !url.pathname)) {
+        return false;
+      }
+      return state.hasPasswordField;
     } catch (error) {
       return true;
     }
@@ -722,7 +773,16 @@ var InstitutionalPDFBridge = {
     const config = this.getConfig();
     if (this.isLoginState(state, config)) {
       try {
-        if (await this.submitStoredCredentials(browser, state, config)) {
+        let submitted = false;
+        for (let attempt = 0; attempt < 20 && this.isLoginState(state, config); attempt++) {
+          submitted = await this.submitStoredCredentials(browser, state, config);
+          if (submitted) {
+            break;
+          }
+          await Zotero.Promise.delay(250);
+          state = await this.getBrowserState(browser);
+        }
+        if (submitted) {
           for (let attempt = 0; attempt < 120; attempt++) {
             await Zotero.Promise.delay(250);
             state = await this.getBrowserState(browser);
@@ -818,16 +878,15 @@ var InstitutionalPDFBridge = {
             } catch (error) {
               Zotero.debug(`Manual credential capture is unavailable: ${error}`);
             }
-            const loginKey = this.isCredentialLoginURL(state.url, config)
-              ? new URL(state.url).pathname
-              : null;
-            if (loginKey && !autoLoginAttempts.has(loginKey)) {
-              autoLoginAttempts.add(loginKey);
-              try {
-                await this.submitStoredCredentials(this.loginBrowser, state, config);
-              } catch (error) {
-                Zotero.debug(`Automatic institutional login skipped: ${error}`);
-              }
+            try {
+              await this.tryStoredCredentialLogin(
+                this.loginBrowser,
+                state,
+                config,
+                autoLoginAttempts
+              );
+            } catch (error) {
+              Zotero.debug(`Automatic institutional login skipped: ${error}`);
             }
           } else {
             await succeed();
@@ -932,6 +991,21 @@ var InstitutionalPDFBridge = {
       }
     };
 
+    if (doi) {
+      const encodedDOI = encodeURI(doi);
+      if (doi.startsWith("10.1126/")) {
+        add(`https://www.science.org/doi/pdf/${encodedDOI}`, "Full Text PDF");
+        add(`https://www.science.org/doi/epdf/${encodedDOI}`, "Full Text PDF");
+      } else if (doi.startsWith("10.1021/")) {
+        add(`https://pubs.acs.org/doi/pdf/${encodedDOI}`, "Full Text PDF");
+      } else if (doi.startsWith("10.1146/")) {
+        add(`https://www.annualreviews.org/doi/pdf/${encodedDOI}`, "Full Text PDF");
+        add(`https://www.annualreviews.org/doi/epdf/${encodedDOI}`, "Full Text PDF");
+      } else if (doi.startsWith("10.1117/")) {
+        add(`https://www.spiedigitallibrary.org/doi/pdf/${encodedDOI}`, "Full Text PDF");
+      }
+    }
+
     const metadataSelectors = [
       ['meta[name="citation_pdf_url"]', "content"],
       ['meta[name="eprints.document_url"]', "content"],
@@ -946,18 +1020,6 @@ var InstitutionalPDFBridge = {
     for (const [selector, attribute] of metadataSelectors) {
       for (const element of document.querySelectorAll(selector)) {
         add(element.getAttribute(attribute));
-      }
-    }
-
-    if (doi) {
-      const encodedDOI = encodeURI(doi);
-      if (doi.startsWith("10.1021/")) {
-        add(`https://pubs.acs.org/doi/pdf/${encodedDOI}`, "Full Text PDF");
-      } else if (doi.startsWith("10.1146/")) {
-        add(`https://www.annualreviews.org/doi/pdf/${encodedDOI}`, "Full Text PDF");
-        add(`https://www.annualreviews.org/doi/epdf/${encodedDOI}`, "Full Text PDF");
-      } else if (doi.startsWith("10.1117/")) {
-        add(`https://www.spiedigitallibrary.org/doi/pdf/${encodedDOI}`, "Full Text PDF");
       }
     }
 

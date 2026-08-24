@@ -164,13 +164,15 @@ test("double-prefixed preferences are migrated once", () => {
   assert.equal(Object.hasOwn(preferences, badKey), false);
 });
 
-test("old 45-second user setting is migrated to the slower WebVPN default", () => {
+test("legacy slow request policy is migrated to a bounded fallback", () => {
   const preferences = {
-    "extensions.zotero.institutionalPDFBridge.requestTimeoutMs": 45000
+    "extensions.zotero.institutionalPDFBridge.requestTimeoutMs": 1800000,
+    "extensions.zotero.institutionalPDFBridge.requestRetryCount": 1
   };
   const { bridge } = loadBridge(preferences);
-  bridge.migrateLegacyRequestTimeout();
-  assert.equal(bridge.getConfig().requestTimeoutMs, 180000);
+  bridge.migrateLegacyRequestPolicy();
+  assert.equal(bridge.getConfig().requestTimeoutMs, 30000);
+  assert.equal(bridge.getConfig().requestRetryCount, 0);
 });
 
 test("credentials are stored in Zotero Password Manager instead of preferences", async () => {
@@ -229,6 +231,23 @@ test("automatic credential submission is restricted to the configured HTTPS logi
     hasPasswordField: true
   }), false);
   assert.equal(queries.length, 1);
+});
+
+test("automatic login retries until the visible form is actually submitted", async () => {
+  const { bridge } = loadBridge({
+    "extensions.zotero.institutionalPDFBridge.gatewayURL": "https://proxy.example.edu",
+    "extensions.zotero.institutionalPDFBridge.loginURL": "https://proxy.example.edu/login"
+  });
+  const attempts = new Set();
+  const state = { url: "https://proxy.example.edu/login", hasPasswordField: false };
+  bridge.submitStoredCredentials = async (_browser, currentState) => currentState.hasPasswordField;
+
+  assert.equal(await bridge.tryStoredCredentialLogin({}, state, bridge.getConfig(), attempts), false);
+  assert.equal(attempts.size, 0);
+  state.hasPasswordField = true;
+  assert.equal(await bridge.tryStoredCredentialLogin({}, state, bridge.getConfig(), attempts), true);
+  assert.deepEqual([...attempts], ["/login"]);
+  assert.equal(await bridge.tryStoredCredentialLogin({}, state, bridge.getConfig(), attempts), false);
 });
 
 test("saved credentials require an HTTPS login URL", async () => {
@@ -400,6 +419,7 @@ test("login actor captures manually submitted credentials once", async () => {
 
 test("credential capture parent validates auto-login and the exact HTTPS origin", () => {
   const source = readFileSync(new URL("../proxy-parent.sys.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /resource:\/\/gre\/modules\/Services\.sys\.mjs/);
   assert.match(source, /getBoolPref\(PREF_BRANCH \+ "autoLogin", true\)/);
   assert.match(source, /captureCredentialsFromLogin/);
   assert.match(source, /new URL\(message\.data\?\.url \|\| ""\)\.origin !== origin/);
@@ -427,7 +447,7 @@ test("Sangfor-compatible host encoding remains stable", async () => {
   assert.equal(encoded, "30313233343536373839616263646566161d17a671ae9a");
 });
 
-test("manual lookup adds the proxy resolver and tries it first", async () => {
+test("manual lookup tries the bounded institutional resolver first", async () => {
   const { bridge, context, calls } = loadBridge();
   bridge.downloadViaProxy = async () => {
     calls.push("proxy-download");
@@ -445,6 +465,101 @@ test("manual lookup adds the proxy resolver and tries it first", async () => {
   const result = await context.Zotero.Attachments.downloadFirstAvailableFile(manual, "/tmp/a.pdf", {});
   assert.ok(result);
   assert.deepEqual(calls, ["proxy-download"]);
+});
+
+test("failed institutional lookup falls back to Zotero resolvers", async () => {
+  const { bridge, context, calls } = loadBridge();
+  context.Zotero.Attachments.getFileResolvers = () => [async () => {
+    calls.push("standard-resolver");
+    return { mimeType: "application/pdf" };
+  }];
+  bridge.downloadViaProxy = async () => {
+    calls.push("proxy-download");
+    return false;
+  };
+  bridge.patchFindAvailableFiles();
+  const item = {
+    getField: (name) => name === "DOI" ? "10.1/example" : "",
+    getExtraField: () => ""
+  };
+  const resolvers = context.Zotero.Attachments.getFileResolvers(item, ["doi"], false);
+  const result = await context.Zotero.Attachments.downloadFirstAvailableFile(resolvers, "/tmp/a.pdf", {});
+  assert.ok(result);
+  assert.deepEqual(calls, ["proxy-download", "native-download", "standard-resolver"]);
+});
+
+test("login actor detects enabled password fields before page animation completes", async () => {
+  const source = readFileSync(new URL("../proxy-child.sys.mjs", import.meta.url), "utf8")
+    .replace("export class InstitutionalPDFBridgeActorChild", "class InstitutionalPDFBridgeActorChild") +
+    "\nglobalThis.TestActor = InstitutionalPDFBridgeActorChild;";
+  const actorContext = createContext({ JSWindowActorChild: class {} });
+  runInContext(source, actorContext);
+  const actor = new actorContext.TestActor();
+  const hiddenPassword = {
+    type: "password",
+    disabled: false,
+    hidden: false,
+    getAttribute: () => null,
+    getClientRects: () => []
+  };
+  actor.document = {
+    location: { href: "https://proxy.example.edu/" },
+    querySelectorAll: () => [hiddenPassword]
+  };
+  actor.contentWindow = {
+    getComputedStyle: () => ({ display: "block", visibility: "visible" })
+  };
+
+  const state = await actor.receiveMessage({ name: "State" });
+  assert.equal(state.url, "https://proxy.example.edu/");
+  assert.equal(state.hasPasswordField, true);
+});
+
+test("login actor prefers the visible password form over dormant login markup", async () => {
+  const source = readFileSync(new URL("../proxy-child.sys.mjs", import.meta.url), "utf8")
+    .replace("export class InstitutionalPDFBridgeActorChild", "class InstitutionalPDFBridgeActorChild") +
+    "\nglobalThis.TestActor = InstitutionalPDFBridgeActorChild;";
+  const actorContext = createContext({ JSWindowActorChild: class {} });
+  runInContext(source, actorContext);
+
+  const makeField = (type, visible, form) => ({
+    type,
+    name: type === "password" ? "password" : "username",
+    id: "",
+    autocomplete: "",
+    placeholder: "",
+    disabled: false,
+    hidden: false,
+    form,
+    getAttribute: () => null,
+    getClientRects: () => visible ? [{}] : []
+  });
+  const dormantForm = {};
+  const visibleForm = {};
+  const dormantPassword = makeField("password", false, dormantForm);
+  const visibleUsername = makeField("text", true, visibleForm);
+  const visiblePassword = makeField("password", true, visibleForm);
+  const actor = new actorContext.TestActor();
+  actor.document = {
+    querySelectorAll: () => [dormantPassword, visibleUsername, visiblePassword]
+  };
+  actor.contentWindow = {
+    getComputedStyle: () => ({ display: "block", visibility: "visible" })
+  };
+
+  const fields = actor.getLoginFields();
+  assert.equal(fields.passwordField, visiblePassword);
+  assert.equal(fields.usernameField, visibleUsername);
+});
+
+test("authenticated gateway root wins over dormant login markup", () => {
+  const { bridge } = loadBridge({
+    "extensions.zotero.institutionalPDFBridge.gatewayURL": "https://proxy.example.edu"
+  });
+  assert.equal(bridge.isLoginState({
+    url: "https://proxy.example.edu/",
+    hasPasswordField: true
+  }, bridge.getConfig()), false);
 });
 
 test("automatic lookup uses a quiet resolver and never requests interactive login", async () => {
@@ -487,6 +602,17 @@ test("AIP-style article PDF links are recognized as candidates", async () => {
   );
   assert.equal(candidates.length, 1);
   assert.match(candidates[0].url, /article-pdf\/doi\/10\.1063/);
+});
+
+test("Science DOI PDF routes are prioritized", async () => {
+  const { bridge } = loadBridge();
+  const document = { querySelectorAll: () => [] };
+  const candidates = await bridge.findPDFCandidates(
+    document,
+    "https://www.science.org/doi/10.1126/science.adv2132",
+    "10.1126/science.adv2132"
+  );
+  assert.match(candidates[0].url, /science\.org\/doi\/pdf\/10\.1126\/science\.adv2132$/);
 });
 
 test("template mode encodes the target URL", async () => {

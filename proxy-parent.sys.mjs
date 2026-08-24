@@ -1,5 +1,3 @@
-import { Services } from "resource://gre/modules/Services.sys.mjs";
-
 const PREF_BRANCH = "extensions.zotero.institutionalPDFBridge.";
 
 function getStringPref(name, fallback = "") {

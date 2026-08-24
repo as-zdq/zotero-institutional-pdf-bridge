@@ -1,22 +1,46 @@
 export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
+  isVisibleField(field) {
+    if (!field || field.disabled || field.hidden || field.getAttribute?.("aria-hidden") === "true") {
+      return false;
+    }
+    const view = this.contentWindow || this.document.defaultView;
+    const style = view?.getComputedStyle?.(field);
+    return (!style || (style.display !== "none" && style.visibility !== "hidden")) &&
+      (typeof field.getClientRects !== "function" || field.getClientRects().length > 0);
+  }
+
   getLoginFields() {
-    const passwordField = this.document.querySelector('input[type="password"]:not([disabled])');
+    const fields = Array.from(this.document.querySelectorAll("input"));
+    const passwordFields = fields.filter((field) =>
+      (field.type || "").toLowerCase() === "password" && !field.disabled
+    );
+    const passwordField = passwordFields.find((field) => this.isVisibleField(field)) ||
+      passwordFields[0];
     if (!passwordField) {
       return { passwordField: null, usernameField: null };
     }
 
-    const fields = Array.from(this.document.querySelectorAll("input"));
-    const usernameField = fields.find((field) => {
+    const isUsernameField = (field, requireVisible) => {
       const type = (field.type || "text").toLowerCase();
-      const name = `${field.name || ""} ${field.id || ""} ${field.autocomplete || ""}`.toLowerCase();
-      return !field.disabled && type !== "hidden" && type !== "password" && (
+      const name = `${field.name || ""} ${field.id || ""} ${field.autocomplete || ""} ${field.placeholder || ""}`.toLowerCase();
+      return (!requireVisible || this.isVisibleField(field)) && !field.disabled &&
+        type !== "hidden" && type !== "password" && (
         type === "email" ||
         type === "text" ||
+        type === "tel" ||
         name.includes("user") ||
         name.includes("account") ||
-        name.includes("login")
+        name.includes("login") ||
+        name.includes("学号") ||
+        name.includes("职工号") ||
+        name.includes("手机号")
       );
-    });
+    };
+    const usernameField = fields.find((field) =>
+      field.form === passwordField.form && isUsernameField(field, true)
+    ) || fields.find((field) => isUsernameField(field, true)) ||
+      fields.find((field) => field.form === passwordField.form && isUsernameField(field, false)) ||
+      fields.find((field) => isUsernameField(field, false));
     return { passwordField, usernameField };
   }
 
@@ -63,7 +87,7 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
     if (message.name === "State") {
       return {
         url: this.document.location.href,
-        hasPasswordField: Boolean(this.document.querySelector('input[type="password"]'))
+        hasPasswordField: Boolean(this.getLoginFields().passwordField)
       };
     }
 
@@ -83,6 +107,7 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
           this.contentWindow.HTMLInputElement.prototype,
           "value"
         )?.set;
+        field.focus?.();
         if (setter) {
           setter.call(field, value);
         } else {
@@ -97,9 +122,26 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
       }
       setValue(passwordField, password);
 
+      // Let login pages driven by Vue/React update their form state before
+      // choosing and activating the submit control.
+      if (typeof this.contentWindow.setTimeout === "function") {
+        await new Promise((resolve) => this.contentWindow.setTimeout(resolve, 0));
+      }
+
       const form = passwordField.form || usernameField?.form;
-      const submitter = form?.querySelector('button[type="submit"], input[type="submit"]') ||
-        this.document.querySelector('button[type="submit"], input[type="submit"]');
+      const controls = Array.from(
+        (form || this.document).querySelectorAll?.('button:not([disabled]), input[type="submit"]') || []
+      );
+      const visibleControls = controls.filter((control) => this.isVisibleField(control));
+      const labelledLogin = (control) => /^(?:登录|login|signin)$/i.test(
+        String(control.textContent || control.value || "").replace(/\s+/g, "")
+      );
+      const submitter = visibleControls.find((control) =>
+        (control.type || "").toLowerCase() === "submit"
+      ) || visibleControls.find(labelledLogin) ||
+        form?.querySelector?.('button[type="submit"], input[type="submit"]') ||
+        this.document.querySelector?.('button[type="submit"], input[type="submit"]') ||
+        controls.find(labelledLogin);
       if (submitter) {
         submitter.click();
       } else if (form?.requestSubmit) {
