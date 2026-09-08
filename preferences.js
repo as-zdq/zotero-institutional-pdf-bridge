@@ -29,6 +29,8 @@ var InstitutionalPDFBridgePreferences = {
       autoFetchNewItems: document.getElementById("institutional-pdf-bridge-auto-fetch").checked,
       autoFetchDelayMs: Number(document.getElementById("institutional-pdf-bridge-auto-delay").value),
       autoLogin: document.getElementById("institutional-pdf-bridge-auto-login").checked,
+      checkLoginOnStartup: document.getElementById("institutional-pdf-bridge-startup-login").checked,
+      captureCredentialsFromLogin: document.getElementById("institutional-pdf-bridge-capture-login-credentials").checked,
       loginPathKeywords: document.getElementById("institutional-pdf-bridge-keywords").value.trim()
     };
     for (const [name, value] of Object.entries(values)) {
@@ -48,8 +50,8 @@ var InstitutionalPDFBridgePreferences = {
       const stored = await Zotero.InstitutionalPDFBridge.hasStoredCredentials();
       const enabled = document.getElementById("institutional-pdf-bridge-auto-login").checked;
       status.value = stored
-        ? enabled ? "Credentials saved securely" : "Credentials saved; automatic sign-in is disabled"
-        : "No saved credentials";
+        ? enabled ? "凭据已安全保存" : "凭据已保存；自动登录已关闭"
+        : "没有已保存的凭据";
     } catch (error) {
       status.value = error.message || String(error);
     }
@@ -63,11 +65,9 @@ var InstitutionalPDFBridgePreferences = {
     try {
       this.saveSettings();
       await Zotero.InstitutionalPDFBridge.storeCredentials(username, password);
-      document.getElementById("institutional-pdf-bridge-username").value = "";
-      document.getElementById("institutional-pdf-bridge-password").value = "";
       await this.refreshCredentialStatus();
       if (!quiet) {
-        this.setStatus("Credentials saved in Zotero Password Manager");
+        this.setStatus("凭据已保存到 Zotero 密码管理器；密码仅以掩码显示");
       }
     } catch (error) {
       Zotero.logError(error);
@@ -87,7 +87,7 @@ var InstitutionalPDFBridgePreferences = {
       document.getElementById("institutional-pdf-bridge-username").value = "";
       document.getElementById("institutional-pdf-bridge-password").value = "";
       await this.refreshCredentialStatus();
-      this.setStatus("Saved credentials removed");
+      this.setStatus("已删除保存的凭据");
     } catch (error) {
       Zotero.logError(error);
       this.setStatus(error.message || String(error));
@@ -99,7 +99,7 @@ var InstitutionalPDFBridgePreferences = {
   async testLogin() {
     const button = document.getElementById("institutional-pdf-bridge-test");
     button.disabled = true;
-    this.setStatus("Waiting for login...");
+    this.setStatus("等待登录…");
     try {
       this.saveSettings();
       const username = document.getElementById("institutional-pdf-bridge-username").value;
@@ -109,7 +109,7 @@ var InstitutionalPDFBridgePreferences = {
       }
       await Zotero.InstitutionalPDFBridge.reloadConfiguration();
       await Zotero.InstitutionalPDFBridge.openLogin();
-      this.setStatus("Authenticated; background session is active");
+      this.setStatus("认证成功；后台会话已启用");
     } catch (error) {
       Zotero.logError(error);
       this.setStatus(error.message || String(error));
