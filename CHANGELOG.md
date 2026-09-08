@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.12 - 2026-09-08
+
+- Use the configured login URL for silent session restoration, matching interactive login, instead of waiting on gateway landing pages that only contain an SSO link.
+- Keep login-origin validation and credential storage unchanged.
+
+## 0.2.11 - 2026-09-08
+
+- Enable new-item lookup by default with a two-second debounce; preserve explicit opt-outs and supported custom delays, and repair invalid legacy delays above 60 seconds.
+- Limit automatic lookup to new regular items and their immediate metadata updates, using two background lanes and shared session restoration.
+- Prefer the saved article URL and existing PDF links over redundant DOI resolution and translator network calls.
+- Bound institutional session, page, and PDF lookup waits; discard late results and avoid duplicate PDFs when the Connector completes first. Zotero native fallback and indexing retain their own timing.
+- Add regression coverage for automatic triggering, shared login, concurrency, timeout safety, legacy delay repair, and duplicate prevention.
+
 ## 0.2.3 - 2026-08-19
 
 - Added a default-enabled startup check that restores the institutional session and signs in silently with saved credentials.

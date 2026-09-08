@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "机构 PDF 桥接",
-  "version": "0.2.10",
+  "version": "0.2.12",
   "description": "通过配置的机构代理为 Zotero 查找全文 PDF。",
   "author": "Institutional PDF Bridge contributors",
   "homepage_url": "https://github.com/as-zdq/zotero-institutional-pdf-bridge",

@@ -37,12 +37,17 @@ var InstitutionalPDFBridge = {
   loginWindow: null,
   loginBrowser: null,
   loginPromise: null,
+  sessionPromise: null,
   currentURL: null,
   startupError: null,
   autoFetchNotifierID: null,
   autoFetchTimers: new Map(),
+  newItemIDs: new Map(),
   autoFetchRunning: new Set(),
-  autoFetchQueue: Promise.resolve(),
+  // Two background lanes share authentication without flooding the gateway.
+  autoFetchQueues: [Promise.resolve(), Promise.resolve()],
+  autoFetchNextQueue: 0,
+  lastAutoFetchStatus: null,
   isShuttingDown: false,
 
   getPref(name, fallback) {
@@ -66,7 +71,7 @@ var InstitutionalPDFBridge = {
     );
     const autoFetchDelayMs = Math.max(
       2000,
-      Math.min(60000, Number(this.getPref("autoFetchDelayMs", 12000)) || 12000)
+      Math.min(60000, Number(this.getPref("autoFetchDelayMs", 2000)) || 2000)
     );
     let gatewayOrigin = null;
     if (gatewayURL) {
@@ -88,7 +93,7 @@ var InstitutionalPDFBridge = {
       autoCloseLogin: Boolean(this.getPref("autoCloseLogin", true)),
       requestTimeoutMs,
       requestRetryCount,
-      autoFetchNewItems: Boolean(this.getPref("autoFetchNewItems", false)),
+      autoFetchNewItems: Boolean(this.getPref("autoFetchNewItems", true)),
       autoFetchDelayMs,
       autoLogin: Boolean(this.getPref("autoLogin", true)),
       checkLoginOnStartup: Boolean(this.getPref("checkLoginOnStartup", true)),
@@ -311,6 +316,10 @@ var InstitutionalPDFBridge = {
   },
 
   migrateLegacyRequestPolicy() {
+    const autoDelayName = PREF_BRANCH + "autoFetchDelayMs";
+    if (Number(Zotero.Prefs.get(autoDelayName)) > 60000) {
+      Zotero.Prefs.set(autoDelayName, 2000);
+    }
     const timeoutName = PREF_BRANCH + "requestTimeoutMs";
     if (
       Zotero.Prefs.prefHasUserValue(timeoutName) &&
@@ -338,7 +347,15 @@ var InstitutionalPDFBridge = {
           return;
         }
         for (const itemID of ids) {
-          this.scheduleAutoFetch(itemID);
+          if (event === "add" && Zotero.Items.get(itemID)?.isRegularItem?.()) {
+            this.newItemIDs.set(itemID, Date.now() + 120000);
+          }
+          if ((this.newItemIDs.get(itemID) || 0) > Date.now()) {
+            this.scheduleAutoFetch(itemID);
+          }
+        }
+        for (const [id, expires] of this.newItemIDs) {
+          if (expires <= Date.now()) this.newItemIDs.delete(id);
         }
       }
     }, ["item"], PLUGIN_ID);
@@ -350,8 +367,10 @@ var InstitutionalPDFBridge = {
       this.autoFetchNotifierID = null;
     }
     this.autoFetchTimers.clear();
+    this.newItemIDs.clear();
     this.autoFetchRunning.clear();
-    this.autoFetchQueue = Promise.resolve();
+    this.autoFetchQueues = [Promise.resolve(), Promise.resolve()];
+    this.autoFetchNextQueue = 0;
   },
 
   scheduleAutoFetch(itemID) {
@@ -380,7 +399,8 @@ var InstitutionalPDFBridge = {
         return;
       }
       this.autoFetchRunning.add(itemID);
-      this.autoFetchQueue = this.autoFetchQueue
+      const lane = this.autoFetchNextQueue++ % this.autoFetchQueues.length;
+      this.autoFetchQueues[lane] = this.autoFetchQueues[lane]
         .catch((error) => Zotero.logError(error))
         .then(() => this.autoFetchItem(itemID))
         .catch((error) => Zotero.logError(error))
@@ -405,6 +425,7 @@ var InstitutionalPDFBridge = {
     if (!doi && !item.getField("url")) {
       return false;
     }
+    this.newItemIDs.delete(itemID);
     if (
       Zotero.Attachments.canFindFileForItem &&
       !Zotero.Attachments.canFindFileForItem(item)
@@ -412,6 +433,8 @@ var InstitutionalPDFBridge = {
       return false;
     }
 
+    const startedAt = Date.now();
+    this.lastAutoFetchStatus = { itemID, state: "running", startedAt };
     try {
       const attachment = await Zotero.Attachments.addFileFromURLs(
         item,
@@ -420,10 +443,14 @@ var InstitutionalPDFBridge = {
       if (attachment) {
         Zotero.debug(`Institutional PDF downloaded automatically for item ${itemID}`);
       }
+      this.lastAutoFetchStatus = {
+        itemID, state: attachment ? "downloaded" : "not-found", elapsedMs: Date.now() - startedAt
+      };
       return Boolean(attachment);
     } catch (error) {
       // Background lookup must not open the login viewer or surface an alert.
       Zotero.debug(`Institutional PDF automatic lookup skipped for item ${itemID}: ${error}`);
+      this.lastAutoFetchStatus = { itemID, state: "failed", elapsedMs: Date.now() - startedAt };
       return false;
     }
   },
@@ -484,6 +511,10 @@ var InstitutionalPDFBridge = {
           const result = await bridge.downloadViaProxy(resolver.__institutionalProxyItem, path, {
             interactive: resolver.__institutionalProxyInteractive !== false
           });
+          if (bridge.itemHasPDFAttachment(resolver.__institutionalProxyItem)) {
+            if (result) await Zotero.File.removeIfExists(path);
+            return false;
+          }
           if (result) {
             return result;
           }
@@ -492,6 +523,9 @@ var InstitutionalPDFBridge = {
         }
       }
 
+      if (proxyResolvers.some(resolver => bridge.itemHasPDFAttachment(resolver.__institutionalProxyItem))) {
+        return false;
+      }
       return bridge.originalDownloadFirstAvailableFile.call(
         this,
         standardResolvers,
@@ -517,10 +551,30 @@ var InstitutionalPDFBridge = {
     this.patchedDownloadFirstAvailableFile = null;
   },
 
+  async withinDeadline(promise, deadline, stage) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      Promise.resolve(promise).catch(() => {});
+      throw new Error(`${stage}超时`);
+    }
+    const win = Services.appShell.hiddenDOMWindow;
+    let timer;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = win.setTimeout(() => reject(new Error(`${stage}超时`)), Math.max(0, remaining));
+        })
+      ]);
+    } finally {
+      win.clearTimeout(timer);
+    }
+  },
+
   async downloadViaProxy(item, path, { interactive = true } = {}) {
     const doi = Zotero.Utilities.cleanDOI(item.getField("DOI") || item.getExtraField("DOI"));
     const itemURL = item.getField("url");
-    const sourceURL = doi ? `https://doi.org/${encodeURIComponent(doi)}` : itemURL;
+    const sourceURL = itemURL || (doi ? `https://doi.org/${encodeURIComponent(doi)}` : "");
     if (!sourceURL) {
       return false;
     }
@@ -533,8 +587,9 @@ var InstitutionalPDFBridge = {
     const deadline = Date.now() + config.requestTimeoutMs;
     const nextRequestConfig = () => {
       const remaining = deadline - Date.now();
-      return remaining >= 1000 ? {
+      return remaining > 0 ? {
         ...config,
+        deadline,
         requestTimeoutMs: Math.min(15000, remaining),
         requestRetryCount: 0
       } : null;
@@ -544,9 +599,12 @@ var InstitutionalPDFBridge = {
     if (!pageConfig) {
       return false;
     }
-    const page = await this.getAuthenticatedPage(pageURL, pageConfig, interactive);
+    const page = await this.withinDeadline(
+      this.getAuthenticatedPage(pageURL, pageConfig, interactive), deadline, "机构页面读取"
+    );
 
     if (this.isPDFContentType(page.contentType)) {
+      if (this.itemHasPDFAttachment(item)) return false;
       await this.writeValidatedPDF(path, page.blob);
       return this.makeDownloadResult(page.responseURL || sourceURL, null, config);
     }
@@ -554,11 +612,11 @@ var InstitutionalPDFBridge = {
       return false;
     }
 
-    const candidates = await this.findPDFCandidates(
+    const candidates = await this.withinDeadline(this.findPDFCandidates(
       page.document,
       page.responseURL || pageURL,
       doi
-    );
+    ), deadline, "PDF 链接解析");
     for (const candidate of candidates) {
       const requestConfig = nextRequestConfig();
       if (!requestConfig) {
@@ -566,7 +624,11 @@ var InstitutionalPDFBridge = {
       }
       const proxiedCandidate = await this.toProxyURL(candidate.url, config);
       try {
-        const response = await this.fetchPage(proxiedCandidate, requestConfig, false, interactive);
+        const response = await this.withinDeadline(
+          this.fetchPage(proxiedCandidate, requestConfig, false, interactive), deadline, "PDF 下载"
+        );
+        // A Connector download may have completed while this lookup was in flight.
+        if (this.itemHasPDFAttachment(item)) return false;
         await this.writeValidatedPDF(path, response.blob);
         return this.makeDownloadResult(
           candidate.originalURL || candidate.url,
@@ -594,6 +656,7 @@ var InstitutionalPDFBridge = {
 
   async getAuthenticatedPage(pageURL, config, interactive = true) {
     let page = await this.fetchPage(pageURL, config, true, interactive);
+    if (config.deadline && Date.now() >= config.deadline) throw new Error("机构页面读取超时");
     if (!this.isLoginPage(page, config)) {
       return page;
     }
@@ -603,7 +666,8 @@ var InstitutionalPDFBridge = {
       throw new Error("自动查找需要先登录机构代理");
     }
     await this.clearSession();
-    await this.ensureSessionBrowser({ interactive: true, forceLogin: true });
+    if (config.deadline && Date.now() >= config.deadline) throw new Error("机构登录超时");
+    await this.ensureSessionBrowser({ interactive: true, forceLogin: true, deadline: config.deadline });
     page = await this.fetchPage(pageURL, config, true, true);
     if (this.isLoginPage(page, config)) {
       throw new Error("机构代理登录尚未完成");
@@ -612,7 +676,8 @@ var InstitutionalPDFBridge = {
   },
 
   async fetchPage(url, config, allowNavigation, interactive = true) {
-    const browser = await this.ensureSessionBrowser({ interactive });
+    const browser = await this.ensureSessionBrowser({ interactive, deadline: config.deadline });
+    if (config.deadline && Date.now() >= config.deadline) throw new Error("机构请求超时");
     let lastError;
     for (let attempt = 0; attempt <= config.requestRetryCount; attempt++) {
       try {
@@ -620,7 +685,9 @@ var InstitutionalPDFBridge = {
         if (allowNavigation && config.mode !== "sangfor") {
           response = await this.navigateAndRead(browser, url, config);
         } else {
-          response = await this.fetchViaBrowser(browser, url, config.requestTimeoutMs);
+          response = await this.fetchViaBrowser(browser, url, Math.min(
+            config.requestTimeoutMs, config.deadline ? config.deadline - Date.now() : Infinity
+          ));
         }
         if (!response.ok) {
           const error = new Error(`Institutional proxy request failed with HTTP ${response.status}`);
@@ -665,27 +732,30 @@ var InstitutionalPDFBridge = {
   },
 
   async fetchViaBrowser(browser, url, timeoutMs) {
-    const actor = await this.waitForActor(browser);
-    return actor.sendQuery("Fetch", { url, timeoutMs });
+    const deadline = Date.now() + timeoutMs;
+    const actor = await this.withinDeadline(this.waitForActor(browser), deadline, "内容组件等待");
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("机构请求超时");
+    return this.withinDeadline(actor.sendQuery("Fetch", { url, timeoutMs: remaining }), deadline, "机构请求");
   },
 
   async navigateAndRead(browser, url, config) {
     if (!this.hiddenBrowser || browser !== this.hiddenBrowser) {
       return this.fetchViaBrowser(browser, url, config.requestTimeoutMs);
     }
-    await browser.load(url);
+    const deadline = config.deadline || Date.now() + config.requestTimeoutMs;
+    const wait = promise => this.withinDeadline(promise, deadline, "代理页面导航");
+    await wait(browser.load(url));
     try {
-      await browser.waitForDocument({ allowInteractiveAfter: 1500 });
+      await wait(browser.waitForDocument({ allowInteractiveAfter: 1500 }));
     } catch (error) {
       Zotero.debug(`Proxy navigation document wait failed: ${error}`);
     }
-    const actor = await this.waitForActor(browser);
-    const state = await actor.sendQuery("State", {});
+    const actor = await wait(this.waitForActor(browser));
+    const state = await wait(actor.sendQuery("State", {}));
     this.currentURL = state.url || null;
-    return actor.sendQuery("Fetch", {
-      url: state.url || url,
-      timeoutMs: config.requestTimeoutMs
-    });
+    if (Date.now() >= deadline) throw new Error("代理页面导航超时");
+    return this.fetchViaBrowser(browser, state.url || url, deadline - Date.now());
   },
 
   isLoginPage(page, config) {
@@ -714,7 +784,26 @@ var InstitutionalPDFBridge = {
     }
   },
 
-  async ensureSessionBrowser({ interactive = true, forceLogin = false } = {}) {
+  async ensureSessionBrowser({ interactive = true, forceLogin = false, deadline } = {}) {
+    const config = this.getConfig();
+    if (!config.enabled || !config.gatewayURL) throw new Error("请先启用并配置机构代理网关");
+    deadline = deadline || Date.now() + config.requestTimeoutMs;
+    if (this.loginPromise) return this.withinDeadline(this.loginPromise, deadline, "机构登录");
+    if (!forceLogin) {
+      if (!this.sessionPromise) {
+        this.sessionPromise = this.restoreSessionBrowser(Math.min(deadline, Date.now() + 20000))
+          .finally(() => { this.sessionPromise = null; });
+      }
+      try {
+        return await this.withinDeadline(this.sessionPromise, deadline, "机构会话检查");
+      } catch (error) {
+        if (!interactive || Date.now() >= deadline) throw error;
+      }
+    }
+    return this.openInteractiveLogin({ ...config, deadline });
+  },
+
+  async restoreSessionBrowser(deadline) {
     const config = this.getConfig();
     if (!config.enabled) {
       throw new Error("机构 PDF 桥接已禁用");
@@ -723,9 +812,9 @@ var InstitutionalPDFBridge = {
       throw new Error("尚未配置机构代理网关 URL");
     }
 
-    if (!forceLogin && this.sessionBrowser) {
+    if (this.sessionBrowser) {
       try {
-        const state = await this.getBrowserState(this.sessionBrowser);
+        const state = await this.withinDeadline(this.getBrowserState(this.sessionBrowser), deadline, "会话状态检查");
         if (!this.isLoginState(state, config)) {
           this.currentURL = state.url;
           return this.sessionBrowser;
@@ -736,9 +825,10 @@ var InstitutionalPDFBridge = {
       await this.clearSession();
     }
 
-    if (!forceLogin) {
+    if (Date.now() < deadline) {
       try {
-        const state = await this.createHiddenSession(config.gatewayURL);
+        // A gateway home page may only offer an SSO link, not a login form.
+        const state = await this.createHiddenSession(config.loginURL || config.gatewayURL, deadline);
         if (!this.isLoginState(state, config)) {
           return this.sessionBrowser;
         }
@@ -748,44 +838,53 @@ var InstitutionalPDFBridge = {
       await this.clearSession();
     }
 
-    if (!interactive) {
-      throw new Error("需要登录机构代理");
-    }
-    return this.openInteractiveLogin(config);
+    throw new Error("机构后台登录未完成，请在插件设置中检查登录状态");
   },
 
-  async createHiddenSession(sourceURL) {
+  async createHiddenSession(sourceURL, deadline = Date.now() + 20000) {
+    const wait = async (promise) => {
+      const result = await this.withinDeadline(promise, deadline, "机构后台登录");
+      if (this.hiddenBrowser !== browser) throw new Error("机构会话已取消");
+      return result;
+    };
     await this.destroyHiddenBrowser();
     const { HiddenBrowser } = ChromeUtils.importESModule(
       "chrome://zotero/content/HiddenBrowser.mjs"
     );
     const browser = new HiddenBrowser({ useHiddenFrame: false });
-    await browser._createdPromise;
     this.hiddenBrowser = browser;
     this.sessionBrowser = browser;
-    await browser.load(sourceURL);
+    await wait(browser._createdPromise);
+    await wait(browser.load(sourceURL));
     try {
-      await browser.waitForDocument({ allowInteractiveAfter: 1500 });
+      await wait(browser.waitForDocument({ allowInteractiveAfter: 1500 }));
     } catch (error) {
       Zotero.debug(`Hidden proxy browser document wait failed: ${error}`);
     }
-    let state = await this.getBrowserState(browser);
+    let state = await wait(this.getBrowserState(browser));
     const config = this.getConfig();
     if (this.isLoginState(state, config)) {
       try {
         let submitted = false;
         for (let attempt = 0; attempt < 20 && this.isLoginState(state, config); attempt++) {
-          submitted = await this.submitStoredCredentials(browser, state, config);
+          if (Date.now() >= deadline) throw new Error("机构后台登录超时");
+          submitted = await wait(this.submitStoredCredentials(browser, state, config));
           if (submitted) {
             break;
           }
           await Zotero.Promise.delay(250);
-          state = await this.getBrowserState(browser);
+          state = await wait(this.getBrowserState(browser));
         }
         if (submitted) {
           for (let attempt = 0; attempt < 120; attempt++) {
             await Zotero.Promise.delay(250);
-            state = await this.getBrowserState(browser);
+            if (Date.now() >= deadline) throw new Error("机构后台登录超时");
+            try {
+              state = await wait(this.getBrowserState(browser));
+            } catch (error) {
+              if (Date.now() >= deadline) throw error;
+              continue; // Navigation temporarily replaces the content actor.
+            }
             if (!this.isLoginState(state, config)) {
               Zotero.debug("已使用保存的凭据静默登录机构代理");
               break;
@@ -811,11 +910,13 @@ var InstitutionalPDFBridge = {
     this.loginWindow = win;
     this.loginPromise = new Promise((resolve, reject) => {
       let pollTimer;
+      let timeoutTimer;
       let finished = false;
       let checking = false;
       const autoLoginAttempts = new Set();
 
       const cleanup = () => {
+        win.clearTimeout(timeoutTimer);
         if (pollTimer) {
           win.clearInterval(pollTimer);
         }
@@ -830,6 +931,7 @@ var InstitutionalPDFBridge = {
         this.loginBrowser = null;
         this.loginPromise = null;
         reject(new Error(message));
+        if (!win.closed) win.close();
       };
       const succeed = async () => {
         if (finished) {
@@ -837,7 +939,8 @@ var InstitutionalPDFBridge = {
         }
         try {
           const visibleState = await this.getBrowserState(this.loginBrowser);
-          const hiddenState = await this.createHiddenSession(visibleState.url || config.gatewayURL);
+          const hiddenState = await this.createHiddenSession(visibleState.url || config.gatewayURL, config.deadline);
+          if (finished) return;
           if (this.isLoginState(hiddenState, config)) {
             throw new Error("无法将已认证会话转移到后台浏览器");
           }
@@ -854,6 +957,7 @@ var InstitutionalPDFBridge = {
           }
           resolve(browser);
         } catch (error) {
+          if (finished) return;
           Zotero.debug(`Keeping the visible proxy browser: ${error}`);
           finished = true;
           cleanup();
@@ -898,6 +1002,7 @@ var InstitutionalPDFBridge = {
         }
       };
       const initializeViewer = () => {
+        if (finished) return;
         this.loginBrowser = win.document.querySelector("browser");
         if (!this.loginBrowser) {
           fail("无法创建机构代理登录浏览器");
@@ -911,6 +1016,9 @@ var InstitutionalPDFBridge = {
         }, { once: true });
         checkPage();
       };
+
+      timeoutTimer = win.setTimeout(() => fail("机构登录超时，请在设置中单独完成登录"),
+        Math.max(0, (config.deadline || Date.now() + config.requestTimeoutMs) - Date.now()));
 
       if (win.document.readyState === "complete") {
         win.setTimeout(initializeViewer, 0);
@@ -1023,15 +1131,6 @@ var InstitutionalPDFBridge = {
       }
     }
 
-    try {
-      const translated = await Zotero.Utilities.Internal.getFileFromDocument(document);
-      if (translated) {
-        add(translated.url, translated.title);
-      }
-    } catch (error) {
-      Zotero.debug(`Institutional proxy page translation failed: ${error}`);
-    }
-
     for (const element of document.querySelectorAll('a[href]')) {
       const href = element.getAttribute("href");
       const label = element.textContent.trim();
@@ -1043,6 +1142,17 @@ var InstitutionalPDFBridge = {
       }
       if (candidates.length >= 24) {
         break;
+      }
+    }
+    // Avoid translator network calls when the page already exposes PDF links.
+    if (!candidates.length) {
+      try {
+        const translated = await this.withinDeadline(
+          Zotero.Utilities.Internal.getFileFromDocument(document), Date.now() + 5000, "网页解析"
+        );
+        if (translated) add(translated.url, translated.title);
+      } catch (error) {
+        Zotero.debug(`Institutional proxy page translation failed: ${error}`);
       }
     }
     return candidates;
