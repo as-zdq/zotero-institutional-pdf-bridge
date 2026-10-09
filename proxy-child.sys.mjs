@@ -1,23 +1,47 @@
 export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
+  isVisible(element) {
+    if (!element || element.disabled || element.type === "hidden") {
+      return false;
+    }
+    return !element.getClientRects || element.getClientRects().length > 0;
+  }
+
+  getPasswordLoginSwitch() {
+    return Array.from(this.document.querySelectorAll('[role="tab"], [role="menuitem"], button, a'))
+      .find((element) => this.isVisible(element) &&
+        /^(?:password(?:\s+login|\s+sign[ -]?in)?|(?:\u8d26\u53f7|\u8d26\u6237)?\u5bc6\u7801\u767b\u5f55)$/i
+          .test((element.textContent || "").trim()));
+  }
+
   getLoginFields() {
-    const passwordField = this.document.querySelector('input[type="password"]:not([disabled])');
+    let fields = Array.from(this.document.querySelectorAll("input"));
+    const passwordField = fields.find((field) => field.type === "password" && this.isVisible(field) &&
+      !/captcha|verification|dynamic\s*code|one-time-code|otp|\u9a8c\u8bc1\u7801/i.test(
+        `${field.name || ""} ${field.id || ""} ${field.placeholder || ""} ${field.autocomplete || ""}`
+      ));
     if (!passwordField) {
       return { passwordField: null, usernameField: null };
     }
 
-    const fields = Array.from(this.document.querySelectorAll("input"));
-    const usernameField = fields.find((field) => {
+    const form = passwordField.form;
+    if (form?.querySelectorAll) {
+      fields = Array.from(form.querySelectorAll("input"));
+    }
+    const usernameFields = fields.filter((field) => {
       const type = (field.type || "text").toLowerCase();
-      const name = `${field.name || ""} ${field.id || ""} ${field.autocomplete || ""}`.toLowerCase();
-      return !field.disabled && type !== "hidden" && type !== "password" && (
-        type === "email" ||
-        type === "text" ||
-        name.includes("user") ||
-        name.includes("account") ||
-        name.includes("login")
-      );
+      const label = `${field.name || ""} ${field.id || ""} ${field.placeholder || ""}`;
+      return this.isVisible(field) && ["text", "email", "tel"].includes(type) &&
+        !/captcha|verification|dynamic\s*code|otp|\u9a8c\u8bc1\u7801/i.test(label);
     });
+    const usernameField = usernameFields.find((field) =>
+      /username|account|netid|login/i.test(`${field.name || ""} ${field.id || ""} ${field.autocomplete || ""}`)
+    ) || usernameFields[0];
     return { passwordField, usernameField };
+  }
+
+  isLoginSubmitter(element) {
+    return this.isVisible(element) && (element.type === "submit" ||
+      /^(?:log\s*in|sign\s*in|\u767b\u5f55|\u767b\u5165)$/i.test((element.textContent || element.value || "").trim()));
   }
 
   captureCredentialSubmission() {
@@ -52,7 +76,7 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
     }, true);
     this.document.addEventListener("click", (event) => {
       const target = event.target?.closest?.('button, input[type="submit"]');
-      if (target && (target.type === "submit" || target.matches?.('button:not([type]), button[type="submit"]'))) {
+      if (target && this.isLoginSubmitter(target)) {
         this.captureCredentialSubmission();
       }
     }, true);
@@ -61,11 +85,13 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
 
   async receiveMessage(message) {
     if (message.name === "State") {
+      const { passwordField } = this.getLoginFields();
       return {
         url: this.document.location.href,
         contentType: this.document.contentType,
         readyState: this.document.readyState,
-        hasPasswordField: Boolean(this.document.querySelector('input[type="password"]'))
+        hasPasswordField: Boolean(passwordField),
+        hasPasswordLogin: Boolean(this.getPasswordLoginSwitch())
       };
     }
 
@@ -75,9 +101,15 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
 
     if (message.name === "FillLogin") {
       const { username, password } = message.data;
+      if (!this.getLoginFields().passwordField) {
+        this.getPasswordLoginSwitch()?.click();
+        for (let attempt = 0; attempt < 30 && !this.getLoginFields().passwordField; attempt++) {
+          await new Promise((resolve) => this.contentWindow.setTimeout(resolve, 100));
+        }
+      }
       const { passwordField, usernameField } = this.getLoginFields();
-      if (!passwordField) {
-        throw new Error("Institution login password field was not found");
+      if (!passwordField || !usernameField) {
+        throw new Error("Visible institution username/password fields were not found");
       }
 
       const setValue = (field, value) => {
@@ -94,22 +126,19 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
         field.dispatchEvent(new this.contentWindow.Event("change", { bubbles: true }));
       };
 
-      if (usernameField) {
-        setValue(usernameField, username);
-      }
+      setValue(usernameField, username);
       setValue(passwordField, password);
 
       const form = passwordField.form || usernameField?.form;
-      const submitter = form?.querySelector('button[type="submit"], input[type="submit"]') ||
-        this.document.querySelector('button[type="submit"], input[type="submit"]');
+      const submitter = Array.from((form || this.document).querySelectorAll(
+        'button, input[type="submit"], input[type="button"], [role="button"]'
+      )).find((element) => this.isLoginSubmitter(element));
       if (submitter) {
         submitter.click();
       } else if (form?.requestSubmit) {
         form.requestSubmit();
-      } else if (form) {
-        form.submit();
       } else {
-        throw new Error("Institution login form was not found");
+        throw new Error("Institution login button was not found");
       }
       return { submitted: true, usernameFilled: Boolean(usernameField) };
     }

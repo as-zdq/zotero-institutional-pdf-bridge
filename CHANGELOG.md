@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.3 - 2026-10-09
+
+- Select password-login mode when an institution defaults to SMS or another sign-in mode.
+- Fill only visible username/password fields in the password form, never hidden forms or verification-code fields.
+- Click the visible login button, including script-driven buttons, rather than submitting an unrelated hidden form or bypassing page-side password encryption.
+- Capture manually submitted credentials from script-driven login buttons as well as standard form submissions.
+- Wait for CAS return-page loading to finish before verifying the gateway session.
+- Resolve public DOI redirects anonymously before sending the publisher URL through the institution gateway, and try rendered navigation when static article access fails.
+
 ## 0.2.2 - 2026-10-09
 
 - Fix the parent content actor on current Zotero by using the built-in Services global instead of a removed module.

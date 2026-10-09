@@ -191,7 +191,7 @@ test("saved article URL is tried before DOI, which remains a fallback", async ()
   const sources = [];
   bridge.getAuthenticatedPage = async (url) => {
     sources.push(url);
-    if (sources.length === 1) {
+    if (!url.startsWith("https://doi.org/")) {
       throw new Error("article URL unavailable");
     }
     return { contentType: "application/pdf", blob: "%PDF-data", responseURL: url };
@@ -201,7 +201,7 @@ test("saved article URL is tried before DOI, which remains a fallback", async ()
     getExtraField: () => ""
   }, "/tmp/test.pdf");
   assert.equal(sources[0], "https://proxy.example.edu/article/123");
-  assert.match(sources[1], /^https:\/\/doi.org\//);
+  assert.match(sources.at(-1), /^https:\/\/doi.org\//);
   assert.equal(result.mimeType, "application/pdf");
   assert.equal(files.get("/tmp/test.pdf"), "%PDF-data");
 });
@@ -223,6 +223,48 @@ test("rendered lookup uses live document HTML instead of fetching it again", asy
   assert.match(new TextDecoder().decode(response.bytes), /dynamic.pdf/);
   assert.equal(response.status, 200);
   assert.equal(fetches, 0);
+});
+
+test("DOI redirects are resolved anonymously before proxying the publisher URL", async () => {
+  const { bridge, context } = loadBridge({
+    "extensions.zotero.institutionalPDFBridge.gatewayURL": "https://proxy.example.edu",
+    "extensions.zotero.institutionalPDFBridge.mode": "sangfor"
+  });
+  context.Zotero.HTTP = { request: async (method, url, options) => {
+    assert.equal(method, "HEAD");
+    assert.match(url, /^https:\/\/doi.org\//);
+    assert.equal(options.anon, true);
+    assert.equal(options.followRedirects, false);
+    return { getResponseHeader: () => "https://publisher.example/article/123" };
+  } };
+  bridge.toProxyURL = async (url) => {
+    assert.equal(url, "https://publisher.example/article/123");
+    return "https://proxy.example.edu/publisher/article/123";
+  };
+  bridge.getAuthenticatedPage = async () => ({ contentType: "application/pdf", blob: "%PDF-real" });
+  const result = await bridge.downloadViaProxy({
+    getField: (name) => name === "DOI" ? "10.1/test" : "", getExtraField: () => ""
+  }, "/tmp/redirected.pdf");
+  assert.equal(result.mimeType, "application/pdf");
+});
+
+test("a refused static article request still gets the rendered fallback", async () => {
+  const { bridge } = loadBridge({
+    "extensions.zotero.institutionalPDFBridge.gatewayURL": "https://proxy.example.edu",
+    "extensions.zotero.institutionalPDFBridge.mode": "direct"
+  });
+  const passes = [];
+  bridge.getAuthenticatedPage = async (_url, _config, _interactive, rendered) => {
+    passes.push(rendered);
+    if (!rendered) {
+      throw new Error("HTTP 403");
+    }
+    return { contentType: "application/pdf", blob: "%PDF-rendered" };
+  };
+  assert.ok(await bridge.downloadViaProxy({
+    getField: (name) => name === "url" ? "https://proxy.example.edu/article" : "", getExtraField: () => ""
+  }, "/tmp/rendered.pdf"));
+  assert.deepEqual(passes, [false, true]);
 });
 
 test("PDF wrapper links are followed to a validated PDF", async () => {
@@ -513,8 +555,8 @@ test("login actor fills a standard form and submits it", async () => {
     }
   }
 
-  const submitter = { clicks: 0, click() { this.clicks++; } };
-  const form = { querySelector: () => submitter };
+  const submitter = { type: "submit", clicks: 0, click() { this.clicks++; } };
+  const form = { querySelectorAll: (selector) => selector === "input" ? [username, password] : [submitter] };
   const username = new FakeInput({ type: "text", name: "username", form });
   const password = new FakeInput({ type: "password", name: "password", form });
   const document = {
@@ -550,6 +592,98 @@ test("login actor fills a standard form and submits it", async () => {
   assert.deepEqual(username.events, ["input", "change"]);
   assert.deepEqual(password.events, ["input", "change"]);
   assert.equal(submitter.clicks, 1);
+});
+
+test("dynamic password login switches mode and ignores hidden forms and code inputs", async () => {
+  const source = readFileSync(new URL("../proxy-child.sys.mjs", import.meta.url), "utf8")
+    .replace("export class InstitutionalPDFBridgeActorChild", "class InstitutionalPDFBridgeActorChild")
+    .concat("\nglobalThis.Actor = InstitutionalPDFBridgeActorChild;");
+  const context = { JSWindowActorChild: class {} };
+  createContext(context);
+  runInContext(source, context);
+  const input = (type, placeholder, visible) => ({
+    type, placeholder, visible, value: "", getClientRects() { return this.visible ? [{}] : []; },
+    dispatchEvent() {}
+  });
+  const username = input("text", "Staff ID/Student ID/Phone", false);
+  const password = input("password", "Enter Password", false);
+  const code = input("password", "Enter Dynamic Code", true);
+  const captcha = input("text", "Verification code", true);
+  const hiddenSubmit = { type: "submit", clicks: 0, getClientRects: () => [], click() { this.clicks++; } };
+  const submitter = {
+    type: "button", textContent: "LOGIN", visible: true, clicks: 0,
+    getClientRects() { return this.visible ? [{}] : []; }, click() { this.clicks++; }
+  };
+  const form = { querySelectorAll: (selector) => selector === "input" ? [captcha, username, password] : [submitter] };
+  username.form = password.form = form;
+  const mode = {
+    textContent: "Password Login", clicks: 0,
+    click() { this.clicks++; username.visible = password.visible = true; code.visible = false; }
+  };
+  const listeners = new Map();
+  const actor = new context.Actor();
+  actor.document = {
+    location: { href: "https://proxy.example.edu/cas/login" },
+    querySelectorAll: (selector) => selector === "input"
+      ? [code, captcha, username, password] : selector.includes('role="tab"') ? [mode] : [hiddenSubmit, submitter],
+    addEventListener: (type, callback) => listeners.set(type, callback)
+  };
+  actor.contentWindow = {
+    HTMLInputElement: class {}, Event: class {}, setTimeout: (callback) => callback()
+  };
+  const state = await actor.receiveMessage({ name: "State" });
+  assert.equal(state.hasPasswordField, false);
+  assert.equal(state.hasPasswordLogin, true);
+  const result = await actor.receiveMessage({ name: "FillLogin", data: { username: "alice", password: "secret" } });
+  assert.equal(result.submitted, true);
+  assert.equal(mode.clicks, 1);
+  assert.equal(username.value, "alice");
+  assert.equal(password.value, "secret");
+  assert.equal(code.value, "");
+  assert.equal(captcha.value, "");
+  assert.equal(submitter.clicks, 1);
+  assert.equal(hiddenSubmit.clicks, 0);
+  const captures = [];
+  actor.sendAsyncMessage = (name, data) => captures.push({ name, data });
+  await actor.receiveMessage({ name: "WatchLogin" });
+  listeners.get("click")({ target: { closest: () => submitter } });
+  assert.equal(captures[0].data.password, "secret");
+  submitter.visible = false;
+  await assert.rejects(actor.receiveMessage({ name: "FillLogin", data: { username: "alice", password: "secret" } }), /login button was not found/);
+  assert.equal(hiddenSubmit.clicks, 0);
+});
+
+test("password-login mode can be selected before visible password fields exist", async () => {
+  const { bridge } = loadBridge({
+    "extensions.zotero.institutionalPDFBridge.loginURL": "https://proxy.example.edu/cas/login",
+    "extensions.zotero.institutionalPDFBridge.autoLogin": true
+  });
+  await bridge.storeCredentials("alice", "secret");
+  bridge.waitForActor = async () => ({ sendQuery: async () => ({ submitted: true }) });
+  assert.equal(await bridge.submitStoredCredentials({}, {
+    url: "https://proxy.example.edu/cas/login", hasPasswordField: false, hasPasswordLogin: true
+  }), true);
+});
+
+test("silent login waits for a loading CAS return page before replacing its browser", async () => {
+  const { bridge } = loadBridge();
+  bridge.hasStoredCredentials = async () => true;
+  let creations = 0;
+  const states = [
+    { url: "https://proxy.example.edu/login", hasPasswordField: true },
+    { url: "https://proxy.example.edu/home", readyState: "loading" },
+    { url: "https://proxy.example.edu/home", readyState: "complete" }
+  ];
+  bridge.createHiddenSession = async () => {
+    if (++creations === 2) {
+      assert.equal(states.length, 0);
+    }
+    return { url: "https://proxy.example.edu/home" };
+  };
+  bridge.getBrowserState = async () => states.shift();
+  bridge.submitStoredCredentials = async () => true;
+  assert.equal(await bridge.restoreSavedLogin(bridge.getConfig()), true);
+  assert.equal(creations, 2);
 });
 
 test("login actor captures manually submitted credentials once", async () => {

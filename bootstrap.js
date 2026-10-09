@@ -207,7 +207,7 @@ var InstitutionalPDFBridge = {
   },
 
   async submitStoredCredentials(browser, state, config = this.getConfig()) {
-    if (!config.autoLogin || !state?.hasPasswordField || !this.isCredentialLoginURL(state.url, config)) {
+    if (!config.autoLogin || !(state?.hasPasswordField || state?.hasPasswordLogin) || !this.isCredentialLoginURL(state.url, config)) {
       return false;
     }
     const credentials = await this.getStoredCredentials(config);
@@ -510,9 +510,36 @@ var InstitutionalPDFBridge = {
     for (const sourceURL of sources) {
       try {
         Zotero.debug(`Looking for ${doi || sourceURL} via ${config.institutionName}`);
-        const pageURL = await this.toProxyURL(sourceURL, config);
+        let articleURL = sourceURL;
+        if (config.mode !== "direct" && new URL(sourceURL).hostname === "doi.org" && Zotero.HTTP?.request) {
+          try {
+            const response = await Zotero.HTTP.request("HEAD", sourceURL, {
+              anon: true, followRedirects: false, successCodes: false,
+              timeout: Math.min(config.requestTimeoutMs, 30000), errorDelayMax: 0
+            });
+            const location = response.getResponseHeader("Location");
+            if (location) {
+              const target = new URL(location, sourceURL);
+              if (["http:", "https:"].includes(target.protocol)) {
+                articleURL = target.href;
+              }
+            }
+          } catch (error) {
+            Zotero.debug(`Public DOI redirect lookup failed; using the DOI gateway URL: ${error}`);
+          }
+        }
+        const pageURL = await this.toProxyURL(articleURL, config);
         for (const rendered of [false, true]) {
-          const page = await this.getAuthenticatedPage(pageURL, config, interactive, rendered);
+          let page;
+          try {
+            page = await this.getAuthenticatedPage(pageURL, config, interactive, rendered);
+          } catch (error) {
+            lastError = error;
+            if (!rendered) {
+              continue;
+            }
+            throw error;
+          }
           if (this.isPDFContentType(page.contentType)) {
             await this.writeValidatedPDF(path, page.blob);
             return this.makeDownloadResult(page.responseURL || sourceURL, null, config);
@@ -757,11 +784,15 @@ var InstitutionalPDFBridge = {
     let submitted = false;
     while (Date.now() < deadline && !this.isShuttingDown) {
       const state = await this.getBrowserState(this.hiddenBrowser);
+      if (state.readyState === "loading" || state.url === "about:blank") {
+        await Zotero.Promise.delay(500);
+        continue;
+      }
       if (!this.isLoginState(state, config)) {
         const verified = await this.createHiddenSession(config.gatewayURL);
         return !this.isLoginState(verified, config);
       }
-      if (state.hasPasswordField && !submitted) {
+      if ((state.hasPasswordField || state.hasPasswordLogin) && !submitted) {
         if (!await this.submitStoredCredentials(this.hiddenBrowser, state, config)) {
           return false;
         }
