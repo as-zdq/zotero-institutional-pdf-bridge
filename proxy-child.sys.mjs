@@ -63,6 +63,8 @@ export class InstitutionalPDFBridgeActorChild extends JSWindowActorChild {
     if (message.name === "State") {
       return {
         url: this.document.location.href,
+        contentType: this.document.contentType,
+        readyState: this.document.readyState,
         hasPasswordField: Boolean(this.document.querySelector('input[type="password"]'))
       };
     }

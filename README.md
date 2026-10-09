@@ -2,13 +2,13 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Institutional PDF Bridge adds a configurable institutional proxy resolver to Zotero's **Find Available PDF** command. It opens the institution's login page only when authentication is required, then transfers the authenticated session to a hidden Zotero browser and closes the visible login window. It can optionally find PDFs automatically after a new item finishes importing; automatic lookups only use an existing session and never open a login window.
+Institutional PDF Bridge adds a configurable institutional proxy resolver to Zotero's **Find Available PDF** command. It opens the institution's login page only when authentication is required, then transfers the authenticated session to a hidden Zotero browser and closes the visible login window. It can optionally find PDFs automatically after a new item finishes importing; automatic lookups can restore expired sessions with saved credentials when automatic sign-in is enabled and never open a login window.
 
 ## 中文说明
 
 Institutional PDF Bridge 为 Zotero 的“查找可用 PDF”增加可配置的学校或单位访问入口。默认只在机构自己的登录页面中认证；也可以由用户主动把账号和密码保存到 Zotero 的受保护登录管理器。登录成功后会话由 Zotero 的隐藏浏览器使用，登录窗口会自动关闭。
 
-快速开始：从 Release 下载 `.xpi`，在 Zotero 的“工具 > 插件”中选择“从文件安装插件”，再到“设置 > Institutional PDF Bridge”填写机构网关、实际 SSO/CAS 登录地址和代理模式。随后可对条目执行“查找可用 PDF”。如需自动登录，勾选自动登录并点击“安全保存凭据”。新条目自动抓取默认关闭，启用后只会复用已有会话，绝不会自动弹出登录窗口或尝试自动登录。
+快速开始：从 Release 下载 `.xpi`，在 Zotero 的“工具 > 插件”中选择“从文件安装插件”，再到“设置 > Institutional PDF Bridge”填写机构网关、实际 SSO/CAS 登录地址和代理模式。随后可对条目执行“查找可用 PDF”。如需自动登录，勾选自动登录并点击“安全保存凭据”。新条目自动抓取默认关闭；启用后会复用已有会话，或在已保存凭据并启用自动登录时静默恢复登录，不会自动弹出登录窗口。
 
 完整中文安装、机构适配与安全说明见 [README.zh-CN.md](README.zh-CN.md)。
 
@@ -32,7 +32,9 @@ that way as bibliography imports instead of plugin packages.
 
 ## Session behavior
 
-Users can save credentials either by entering them in the settings pane or by submitting them in the visible institutional login page. Login-page capture requires both **Automatically sign in with saved credentials** and **Save credentials entered in the institutional login page** to be enabled. The plugin does not store credentials in preferences, export cookies, or log credential values. It saves and submits credentials only for an HTTPS page whose origin exactly matches the configured **Login URL**; configure that field as the actual SSO/CAS login page, not merely the WebVPN gateway. After login, the plugin creates a hidden Zotero browser that shares the institutional session and closes the visible window. Server-side expiry and multi-factor authentication remain authoritative. New-item lookup is disabled by default; when enabled, it silently skips items whose existing session has expired and never starts automatic credential login.
+Users can save credentials either by entering them in the settings pane or by submitting them in the visible institutional login page. Login-page capture requires both **Automatically sign in with saved credentials** and **Save credentials entered in the institutional login page** to be enabled. The plugin does not store credentials in preferences, export cookies, or log credential values. It saves and submits credentials only for an HTTPS page whose origin exactly matches the configured **Login URL**; configure that field as the actual SSO/CAS login page, not merely the WebVPN gateway. After login, the plugin creates a hidden Zotero browser that shares the institutional session and closes the visible window. Server-side expiry and multi-factor authentication remain authoritative. New-item lookup is disabled by default. When enabled, it can restore expired sessions silently if automatic sign-in is enabled and credentials are saved. A failed sign-in blocks further background submissions until manual login succeeds, credentials are saved again, or configuration is reloaded. Failed new-item lookups retry once after a minute unless silent sign-in failed.
+
+Lookup prefers the saved article/WebVPN URL with DOI fallback, reads the rendered document, and follows embedded PDF viewer links. Requests can wait up to 30 minutes. Downloads generated only by button clicks, CAPTCHAs, and publisher-specific APIs may still require manual download.
 
 ## Development
 

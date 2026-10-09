@@ -42,6 +42,8 @@ var InstitutionalPDFBridge = {
   autoFetchTimers: new Map(),
   autoFetchRunning: new Set(),
   autoFetchQueue: Promise.resolve(),
+  downloadQueue: Promise.resolve(),
+  silentLoginBlocked: false,
   isShuttingDown: false,
 
   getPref(name, fallback) {
@@ -57,7 +59,7 @@ var InstitutionalPDFBridge = {
     const mode = String(this.getPref("mode", "sangfor"));
     const requestTimeoutMs = Math.max(
       5000,
-      Math.min(300000, Number(this.getPref("requestTimeoutMs", 180000)) || 180000)
+      Math.min(1800000, Number(this.getPref("requestTimeoutMs", 180000)) || 180000)
     );
     const requestRetryCount = Math.max(
       0,
@@ -65,7 +67,7 @@ var InstitutionalPDFBridge = {
     );
     const autoFetchDelayMs = Math.max(
       2000,
-      Math.min(60000, Number(this.getPref("autoFetchDelayMs", 12000)) || 12000)
+      Math.min(120000, Number(this.getPref("autoFetchDelayMs", 12000)) || 12000)
     );
     let gatewayOrigin = null;
     if (gatewayURL) {
@@ -173,6 +175,7 @@ var InstitutionalPDFBridge = {
     } else {
       Services.logins.addLogin(login);
     }
+    this.silentLoginBlocked = false;
   },
 
   async removeStoredCredentials(config = this.getConfig()) {
@@ -364,14 +367,26 @@ var InstitutionalPDFBridge = {
     }
 
     try {
-      const attachment = await Zotero.Attachments.addFileFromURLs(
-        item,
-        [this.createProxyResolver(item, false)]
-      );
-      if (attachment) {
-        Zotero.debug(`Institutional PDF downloaded automatically for item ${itemID}`);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt) {
+          if (this.silentLoginBlocked) {
+            break;
+          }
+          await Zotero.Promise.delay(60000);
+        }
+        if (this.isShuttingDown || this.itemHasPDFAttachment(item)) {
+          return false;
+        }
+        const attachment = await Zotero.Attachments.addFileFromURLs(
+          item,
+          [this.createProxyResolver(item, false)]
+        );
+        if (attachment) {
+          Zotero.debug(`Institutional PDF downloaded automatically for item ${itemID}`);
+          return true;
+        }
       }
-      return Boolean(attachment);
+      return false;
     } catch (error) {
       // Background lookup must not open the login viewer or surface an alert.
       Zotero.debug(`Institutional PDF automatic lookup skipped for item ${itemID}: ${error}`);
@@ -411,7 +426,7 @@ var InstitutionalPDFBridge = {
     this.patchedGetFileResolvers = function (item, methods, automatic) {
       const resolvers = bridge.originalGetFileResolvers.call(this, item, methods, automatic);
       const doi = Zotero.Utilities.cleanDOI(item.getField("DOI") || item.getExtraField("DOI"));
-      const requested = !methods || methods.includes("doi") || methods.includes("institutional-proxy");
+      const requested = !methods || methods.includes("doi") || methods.includes("url") || methods.includes("institutional-proxy");
       let enabled = false;
       try {
         enabled = bridge.getConfig().enabled;
@@ -467,11 +482,23 @@ var InstitutionalPDFBridge = {
     this.patchedDownloadFirstAvailableFile = null;
   },
 
-  async downloadViaProxy(item, path, { interactive = true } = {}) {
+  downloadViaProxy(item, path, options = {}) {
+    // All lookups share one browser, so navigation and authentication must be serial.
+    const task = this.downloadQueue.then(() => this.downloadViaProxyNow(item, path, options));
+    this.downloadQueue = task.catch(() => {});
+    return task;
+  },
+
+  async downloadViaProxyNow(item, path, { interactive = true } = {}) {
+    if (this.isShuttingDown) {
+      return false;
+    }
     const doi = Zotero.Utilities.cleanDOI(item.getField("DOI") || item.getExtraField("DOI"));
-    const itemURL = item.getField("url");
-    const sourceURL = doi ? `https://doi.org/${encodeURIComponent(doi)}` : itemURL;
-    if (!sourceURL) {
+    const sources = [...new Set([
+      item.getField("url"),
+      doi ? `https://doi.org/${encodeURIComponent(doi)}` : ""
+    ].filter(Boolean))];
+    if (!sources.length) {
       return false;
     }
 
@@ -479,36 +506,59 @@ var InstitutionalPDFBridge = {
     if (!config.gatewayURL) {
       throw new Error("Configure an institutional gateway before looking up PDFs");
     }
-    Zotero.debug(`Looking for ${doi || sourceURL} via ${config.institutionName}`);
-    const pageURL = await this.toProxyURL(sourceURL, config);
-    const page = await this.getAuthenticatedPage(pageURL, config, interactive);
-
-    if (this.isPDFContentType(page.contentType)) {
-      await this.writeValidatedPDF(path, page.blob);
-      return this.makeDownloadResult(page.responseURL || sourceURL, null, config);
-    }
-    if (!page.document) {
-      return false;
-    }
-
-    const candidates = await this.findPDFCandidates(
-      page.document,
-      page.responseURL || pageURL,
-      doi
-    );
-    for (const candidate of candidates) {
-      const proxiedCandidate = await this.toProxyURL(candidate.url, config);
+    let lastError;
+    for (const sourceURL of sources) {
       try {
-        const response = await this.fetchPage(proxiedCandidate, config, false, interactive);
-        await this.writeValidatedPDF(path, response.blob);
-        return this.makeDownloadResult(
-          candidate.originalURL || candidate.url,
-          candidate.title,
-          config
-        );
+        Zotero.debug(`Looking for ${doi || sourceURL} via ${config.institutionName}`);
+        const pageURL = await this.toProxyURL(sourceURL, config);
+        for (const rendered of [false, true]) {
+          const page = await this.getAuthenticatedPage(pageURL, config, interactive, rendered);
+          if (this.isPDFContentType(page.contentType)) {
+            await this.writeValidatedPDF(path, page.blob);
+            return this.makeDownloadResult(page.responseURL || sourceURL, null, config);
+          }
+          if (!page.document) {
+            break;
+          }
+          const candidates = await this.findPDFCandidates(
+            page.document, page.responseURL || pageURL, doi
+          );
+          const tried = new Set();
+          for (let index = 0; index < candidates.length && tried.size < 24; index++) {
+            const candidate = candidates[index];
+            try {
+              const target = await this.toProxyURL(candidate.url, config);
+              if (tried.has(target)) {
+                continue;
+              }
+              tried.add(target);
+              const response = await this.fetchPage(target, config, false, interactive);
+              if (response.document) {
+                if (!this.isLoginPage(response, config) && (candidate.depth || 0) < 2) {
+                  const nested = await this.findPDFCandidates(
+                    response.document, response.responseURL || target, null
+                  );
+                  candidates.push(...nested.map((entry) => ({
+                    ...entry, depth: (candidate.depth || 0) + 1
+                  })));
+                }
+                continue;
+              }
+              await this.writeValidatedPDF(path, response.blob);
+              return this.makeDownloadResult(candidate.originalURL || candidate.url, candidate.title, config);
+            } catch (error) {
+              lastError = error;
+              Zotero.debug(`Institutional PDF candidate failed: ${error}`);
+            }
+          }
+        }
       } catch (error) {
-        Zotero.debug(`Institutional PDF candidate failed: ${candidate.url}\n${error}`);
+        lastError = error;
+        Zotero.debug(`Institutional PDF source failed: ${error}`);
       }
+    }
+    if (lastError) {
+      throw lastError;
     }
     return false;
   },
@@ -525,32 +575,28 @@ var InstitutionalPDFBridge = {
     };
   },
 
-  async getAuthenticatedPage(pageURL, config, interactive = true) {
-    let page = await this.fetchPage(pageURL, config, true, interactive);
+  async getAuthenticatedPage(pageURL, config, interactive = true, rendered = false) {
+    let page = await this.fetchPage(pageURL, config, true, interactive, rendered);
     if (!this.isLoginPage(page, config)) {
       return page;
     }
 
-    if (!interactive) {
-      await this.clearSession();
-      throw new Error("Institutional proxy login is required for automatic lookup");
-    }
     await this.clearSession();
-    await this.ensureSessionBrowser({ interactive: true, forceLogin: true });
-    page = await this.fetchPage(pageURL, config, true, true);
+    await this.ensureSessionBrowser({ interactive, forceLogin: true });
+    page = await this.fetchPage(pageURL, config, true, interactive, rendered);
     if (this.isLoginPage(page, config)) {
       throw new Error("Institutional proxy login was not completed");
     }
     return page;
   },
 
-  async fetchPage(url, config, allowNavigation, interactive = true) {
+  async fetchPage(url, config, allowNavigation, interactive = true, rendered = false) {
     const browser = await this.ensureSessionBrowser({ interactive });
     let lastError;
     for (let attempt = 0; attempt <= config.requestRetryCount; attempt++) {
       try {
         let response;
-        if (allowNavigation && config.mode !== "sangfor") {
+        if (allowNavigation && (rendered || config.mode !== "sangfor")) {
           response = await this.navigateAndRead(browser, url, config);
         } else {
           response = await this.fetchViaBrowser(browser, url, config.requestTimeoutMs);
@@ -606,19 +652,27 @@ var InstitutionalPDFBridge = {
     if (!this.hiddenBrowser || browser !== this.hiddenBrowser) {
       return this.fetchViaBrowser(browser, url, config.requestTimeoutMs);
     }
-    await browser.load(url);
-    try {
-      await browser.waitForDocument({ allowInteractiveAfter: 1500 });
-    } catch (error) {
-      Zotero.debug(`Proxy navigation document wait failed: ${error}`);
+    if (!await browser.load(url)) {
+      throw new Error("Institutional article page could not be loaded");
     }
-    const actor = await this.waitForActor(browser);
-    const state = await actor.sendQuery("State", {});
+    await Zotero.Promise.delay(1500);
+    const { documentHTML, channelInfo } = await browser.getPageData(
+      ["documentHTML", "channelInfo"], { timeout: config.requestTimeoutMs }
+    );
+    const state = await this.getBrowserState(browser);
     this.currentURL = state.url || null;
-    return actor.sendQuery("Fetch", {
-      url: state.url || url,
-      timeoutMs: config.requestTimeoutMs
-    });
+    if (this.isPDFContentType(state.contentType)) {
+      return this.fetchViaBrowser(browser, state.url || url, config.requestTimeoutMs);
+    }
+    const blob = new Services.appShell.hiddenDOMWindow.Blob([documentHTML], { type: "text/html" });
+    const status = channelInfo?.responseStatus || 200;
+    return {
+      ok: status >= 200 && status < 400,
+      status,
+      contentType: "text/html",
+      responseURL: state.url || url,
+      bytes: new Uint8Array(await blob.arrayBuffer())
+    };
   },
 
   isLoginPage(page, config) {
@@ -634,8 +688,8 @@ var InstitutionalPDFBridge = {
     }
     try {
       const url = new URL(state.url);
-      const haystack = `${url.hostname}${url.pathname}`.toLowerCase();
-      return config.loginPathKeywords.some((keyword) => haystack.includes(keyword));
+      const segments = `${url.hostname}${url.pathname}`.toLowerCase().split(/[./_-]+/);
+      return segments.some((segment) => config.loginPathKeywords.includes(segment.replace(/\d+$/, "")));
     } catch (error) {
       return true;
     }
@@ -675,10 +729,47 @@ var InstitutionalPDFBridge = {
       await this.clearSession();
     }
 
+    if (config.autoLogin && !this.silentLoginBlocked) {
+      this.silentLoginBlocked = true;
+      try {
+        if (await this.restoreSavedLogin(config)) {
+          this.silentLoginBlocked = false;
+          return this.sessionBrowser;
+        }
+      } catch (error) {
+        Zotero.debug(`Silent institutional sign-in failed: ${error}`);
+      }
+      await this.clearSession();
+    }
+
     if (!interactive) {
       throw new Error("Institutional proxy login is required");
     }
     return this.openInteractiveLogin(config);
+  },
+
+  async restoreSavedLogin(config) {
+    if (!await this.hasStoredCredentials(config)) {
+      return false;
+    }
+    await this.createHiddenSession(config.loginURL || config.gatewayURL);
+    const deadline = Date.now() + Math.min(config.requestTimeoutMs, 60000);
+    let submitted = false;
+    while (Date.now() < deadline && !this.isShuttingDown) {
+      const state = await this.getBrowserState(this.hiddenBrowser);
+      if (!this.isLoginState(state, config)) {
+        const verified = await this.createHiddenSession(config.gatewayURL);
+        return !this.isLoginState(verified, config);
+      }
+      if (state.hasPasswordField && !submitted) {
+        if (!await this.submitStoredCredentials(this.hiddenBrowser, state, config)) {
+          return false;
+        }
+        submitted = true;
+      }
+      await Zotero.Promise.delay(500);
+    }
+    return false;
   },
 
   async createHiddenSession(sourceURL) {
@@ -691,14 +782,16 @@ var InstitutionalPDFBridge = {
     this.hiddenBrowser = browser;
     this.sessionBrowser = browser;
     await browser.load(sourceURL);
-    try {
-      await browser.waitForDocument({ allowInteractiveAfter: 1500 });
-    } catch (error) {
-      Zotero.debug(`Hidden proxy browser document wait failed: ${error}`);
+    const deadline = Date.now() + Math.min(this.getConfig().requestTimeoutMs, 60000);
+    while (Date.now() < deadline && !this.isShuttingDown) {
+      const state = await this.getBrowserState(browser);
+      if (state.url && state.url !== "about:blank" && state.readyState !== "loading") {
+        this.currentURL = state.url;
+        return state;
+      }
+      await Zotero.Promise.delay(250);
     }
-    const state = await this.getBrowserState(browser);
-    this.currentURL = state.url || null;
-    return state;
+    throw new Error("Institutional gateway page did not become ready within the session timeout");
   },
 
   async openInteractiveLogin(config = this.getConfig()) {
@@ -743,6 +836,7 @@ var InstitutionalPDFBridge = {
             throw new Error("The authenticated session could not be transferred to a hidden browser");
           }
           Zotero.debug("Institutional proxy session transferred to hidden browser");
+          this.silentLoginBlocked = false;
           finished = true;
           cleanup();
           const browser = this.sessionBrowser;
@@ -854,6 +948,7 @@ var InstitutionalPDFBridge = {
   async reloadConfiguration() {
     await this.clearSession();
     this.importedCryptoKeys.clear();
+    this.silentLoginBlocked = false;
   },
 
   async clearSession() {
@@ -902,7 +997,10 @@ var InstitutionalPDFBridge = {
       ['a[data-download-url]', "data-download-url"],
       ['a[data-url*="pdf" i]', "data-url"],
       ['a[href*="/article-pdf/"]', "href"],
-      ['a[href*="/doi/epdf/"]', "href"]
+      ['a[href*="/doi/epdf/"]', "href"],
+      ['iframe[src*="pdf" i]', "src"],
+      ['embed[type="application/pdf"]', "src"],
+      ['object[type="application/pdf"]', "data"]
     ];
     for (const [selector, attribute] of metadataSelectors) {
       for (const element of document.querySelectorAll(selector)) {
